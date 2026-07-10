@@ -1,0 +1,24 @@
+{
+  "name": "@intelligent-agent/shared",
+  "version": "0.1.0",
+  "description": "Shared utilities and types for intelligent agent system",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "agent",
+    "sync",
+    "types"
+  ],
+  "author": "linzili",
+  "license": "MIT",
+  "dependencies": {
+    "@types/node": "^26.1.1"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2"
+  }
+}

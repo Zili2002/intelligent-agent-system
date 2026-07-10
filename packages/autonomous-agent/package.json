@@ -1,0 +1,33 @@
+{
+  "name": "autonomous-agent",
+  "version": "0.1.0",
+  "description": "Mission-driven autonomous exploration system",
+  "type": "module",
+  "main": "./dist/cli.js",
+  "bin": {
+    "autonomous-agent": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/cli.ts",
+    "start": "node dist/cli.js"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "autonomous",
+    "exploration",
+    "research"
+  ],
+  "author": "Claude Code",
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.110.0",
+    "@types/node": "^26.1.1",
+    "commander": "^15.0.0",
+    "dockerode": "^5.0.1",
+    "dotenv": "^17.4.2",
+    "tsx": "^4.23.0",
+    "typescript": "^7.0.2"
+  }
+}

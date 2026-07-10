@@ -1,0 +1,70 @@
+{
+  "id": "mission-test-autonomous-exploration-system-mrdt0p2b",
+  "name": "Test Autonomous Exploration System",
+  "objective": "Validate the autonomous exploration system by completing a simple optimization task: improve the performance of a basic algorithm.",
+  "status": "active",
+  "priority": "medium",
+  "constraints": [
+    {
+      "type": "time",
+      "description": "Time: 3 days"
+    },
+    {
+      "type": "technical",
+      "description": "Must not modify core system code"
+    },
+    {
+      "type": "technical",
+      "description": "Must use only open-source tools"
+    },
+    {
+      "type": "technical",
+      "description": "All experiments must complete within 5 minutes"
+    }
+  ],
+  "successMetrics": [
+    {
+      "name": "Algorithm speed improvement",
+      "target": "≥ 20%",
+      "achieved": false
+    },
+    {
+      "name": "Test accuracy",
+      "target": "≥ 95%",
+      "achieved": false
+    },
+    {
+      "name": "Experiments completed",
+      "target": "≥ 3",
+      "achieved": false
+    }
+  ],
+  "checkpoints": [
+    {
+      "date": "Day 1",
+      "description": "Complete baseline measurement",
+      "completed": false
+    },
+    {
+      "date": "Day 2",
+      "description": "Test at least 2 optimization approaches",
+      "completed": false
+    },
+    {
+      "date": "Day 3",
+      "description": "Validate best approach and generate report",
+      "completed": false
+    }
+  ],
+  "budget": {
+    "llmTokens": 1000000,
+    "llmTokensUsed": 0,
+    "computeHours": 10,
+    "computeHoursUsed": 0,
+    "approvalRequired": false
+  },
+  "createdAt": "2026-07-09T17:52:14.820Z",
+  "experimentIds": [],
+  "notes": [],
+  "startedAt": "2026-07-09T17:52:14.820Z"
+}

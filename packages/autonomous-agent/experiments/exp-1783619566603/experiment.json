@@ -1,0 +1,32 @@
+{
+  "id": "exp-1783619566603",
+  "missionId": "mission-untitled-mission-mrdt1dl6",
+  "hypothesis": {
+    "id": "hyp-1783619566603-baseline",
+    "statement": "Establishing baseline performance will reveal current system capabilities",
+    "rationale": "Before optimization, we need to measure current state to know what to improve",
+    "expectedOutcome": "Quantified baseline metrics that establish starting point",
+    "confidence": 0.9,
+    "relatedKnowledge": []
+  },
+  "status": "designed",
+  "design": {
+    "description": "Experiment to test: Establishing baseline performance will reveal current system capabilities",
+    "steps": [
+      "Set up measurement environment",
+      "Run current system without modifications",
+      "Collect performance metrics",
+      "Record baseline measurements",
+      "Generate summary report"
+    ],
+    "code": "#!/usr/bin/env python3\n\"\"\"\nBaseline measurement experiment\nMission: Untitled Mission\n\"\"\"\n\nimport time\nimport json\nfrom datetime import datetime\n\ndef measure_baseline():\n    \"\"\"Measure current system performance.\"\"\"\n    print(\"Starting baseline measurement...\")\n    start_time = time.time()\n\n    # TODO: Add actual measurement logic\n    # This is a template - customize for your specific mission\n\n    results = {\n        \"timestamp\": datetime.now().isoformat(),\n        \"mission_id\": \"mission-untitled-mission-mrdt1dl6\",\n        \"measurements\": {\n            \"metric_1\": 0.0,\n            \"metric_2\": 0.0,\n        }\n    }\n\n    elapsed = time.time() - start_time\n    results[\"duration_seconds\"] = elapsed\n\n    print(f\"Baseline measurement completed in {elapsed:.2f}s\")\n    return results\n\nif __name__ == \"__main__\":\n    results = measure_baseline()\n\n    # Save results\n    with open(\"results.json\", \"w\") as f:\n        json.dump(results, f, indent=2)\n\n    print(\"Results saved to results.json\")\n",
+    "codeLanguage": "python",
+    "expectedDuration": "10 minutes",
+    "resourceEstimate": {
+      "cpu": 2,
+      "memory": "4GB",
+      "disk": "1GB"
+    }
+  },
+  "createdAt": "2026-07-09T17:52:46.603Z"
+}

@@ -1,0 +1,31 @@
+{
+  "name": "intelligent-agent-system",
+  "version": "0.1.0",
+  "description": "Self-evolving autonomous agent system with mission-driven exploration and knowledge compilation",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "test": "npm test --workspaces",
+    "lint": "npm run lint --workspaces",
+    "format": "prettier --write \"packages/**/*.ts\"",
+    "clean": "npm run clean --workspaces"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "autonomous",
+    "knowledge-base",
+    "mission-driven",
+    "self-evolving"
+  ],
+  "author": "linzili",
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "prettier": "^3.4.2",
+    "@types/node": "^26.1.1"
+  }
+}
