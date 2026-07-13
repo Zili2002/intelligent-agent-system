@@ -33,6 +33,10 @@
     "commander": "^14.0.1",
     "pdf-parse": "2.4.5"
   },
+  "optionalDependencies": {
+    "@napi-rs/canvas-linux-x64-gnu": "0.1.80",
+    "@napi-rs/canvas-linux-x64-musl": "0.1.80"
+  },
   "devDependencies": {
     "@types/node": "^24.10.0",
     "pdf-lib": "1.17.1",
