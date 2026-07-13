@@ -1,172 +1,121 @@
 /**
- * Experiment designer - designs experiments to test hypotheses.
+ * Deterministic offline experiment designer.
  *
- * Takes a hypothesis and creates a detailed experiment plan
- * with code, steps, and expected outcomes.
+ * This fallback produces an honest executable benchmark and never claims to
+ * implement a domain-specific intervention. LLM mode can replace it with a
+ * mission-specific design through the reasoning provider.
  */
 
+import { randomUUID } from "node:crypto";
+import type { Experiment, Hypothesis } from "../types/experiment.js";
 import type { Mission } from "../types/mission.js";
-import type { Hypothesis, Experiment } from "../types/experiment.js";
 
-/**
- * Design an experiment to test a hypothesis.
- */
 export function designExperiment(
   mission: Mission,
-  hypothesis: Hypothesis
+  hypothesis: Hypothesis,
 ): Experiment {
-  const id = `exp-${Date.now()}`;
-
-  // Determine experiment type based on hypothesis
+  const id = `exp-${randomUUID()}`;
   const isBaseline = hypothesis.id.includes("baseline");
-  const steps = isBaseline
-    ? designBaselineSteps(mission)
-    : designTargetedSteps(mission, hypothesis);
-
-  const code = isBaseline
-    ? generateBaselineCode(mission)
-    : generateTargetedCode(mission, hypothesis);
 
   return {
     id,
     missionId: mission.id,
     hypothesis,
     status: "designed",
-
     design: {
-      description: `Experiment to test: ${hypothesis.statement}`,
-      steps,
-      code,
-      codeLanguage: "python",
-      expectedDuration: "10 minutes",
+      description: isBaseline
+        ? "Measure a reproducible local execution baseline"
+        : `Collect reproducible evidence related to: ${hypothesis.statement}`,
+      steps: isBaseline
+        ? [
+            "Run a deterministic CPU workload",
+            "Measure elapsed time and throughput",
+            "Write a structured results.json document",
+          ]
+        : [
+            "Run a deterministic local probe",
+            "Record measurements without claiming a domain intervention",
+            "Report the missing domain evidence as a knowledge gap",
+          ],
+      code: generateOfflineExperimentCode(mission, hypothesis, isBaseline),
+      codeLanguage: "javascript",
+      entrypoint: "experiment.mjs",
+      expectedDuration: "< 1 minute",
       resourceEstimate: {
-        cpu: 2,
-        memory: "4GB",
-        disk: "1GB",
+        cpu: 1,
+        memory: "128MB",
+        disk: "10MB",
       },
     },
-
     createdAt: new Date().toISOString(),
   };
 }
 
-function designBaselineSteps(mission: Mission): string[] {
-  return [
-    "Set up measurement environment",
-    "Run current system without modifications",
-    "Collect performance metrics",
-    "Record baseline measurements",
-    "Generate summary report",
-  ];
-}
-
-function designTargetedSteps(
+function generateOfflineExperimentCode(
   mission: Mission,
-  hypothesis: Hypothesis
-): string[] {
-  return [
-    "Load baseline measurements for comparison",
-    "Implement proposed intervention",
-    "Run experiment with intervention",
-    "Collect performance metrics",
-    "Compare against baseline",
-    "Analyze statistical significance",
-    "Generate comparison report",
-  ];
-}
-
-function generateBaselineCode(mission: Mission): string {
-  return `#!/usr/bin/env python3
-"""
-Baseline measurement experiment
-Mission: ${mission.name}
-"""
-
-import time
-import json
-from datetime import datetime
-
-def measure_baseline():
-    """Measure current system performance."""
-    print("Starting baseline measurement...")
-    start_time = time.time()
-
-    # TODO: Add actual measurement logic
-    # This is a template - customize for your specific mission
-
-    results = {
-        "timestamp": datetime.now().isoformat(),
-        "mission_id": "${mission.id}",
-        "measurements": {
-            "metric_1": 0.0,
-            "metric_2": 0.0,
-        }
-    }
-
-    elapsed = time.time() - start_time
-    results["duration_seconds"] = elapsed
-
-    print(f"Baseline measurement completed in {elapsed:.2f}s")
-    return results
-
-if __name__ == "__main__":
-    results = measure_baseline()
-
-    # Save results
-    with open("results.json", "w") as f:
-        json.dump(results, f, indent=2)
-
-    print("Results saved to results.json")
-`;
-}
-
-function generateTargetedCode(
-  mission: Mission,
-  hypothesis: Hypothesis
+  hypothesis: Hypothesis,
+  isBaseline: boolean,
 ): string {
-  return `#!/usr/bin/env python3
-"""
-Targeted experiment
-Mission: ${mission.name}
-Hypothesis: ${hypothesis.statement}
-"""
+  const experimentsMetric = mission.successMetrics.find(
+    (metric) => metric.name.toLowerCase() === "experiments completed",
+  );
+  const metricUpdates = experimentsMetric
+    ? {
+        [experimentsMetric.name]: mission.experimentIds.length + 1,
+      }
+    : {};
 
-import time
-import json
-from datetime import datetime
+  return `#!/usr/bin/env node
+import { writeFile } from "node:fs/promises";
+import { performance } from "node:perf_hooks";
 
-def run_experiment():
-    """Run experiment to test hypothesis."""
-    print("Starting experiment...")
-    start_time = time.time()
+const iterations = 250000;
+let checksum = 0;
+const startedAt = performance.now();
 
-    # TODO: Implement intervention
-    # Customize this based on the specific hypothesis
+for (let index = 0; index < iterations; index += 1) {
+  checksum = (checksum + ((index * 31) % 997)) % 1000000007;
+}
 
-    results = {
-        "timestamp": datetime.now().isoformat(),
-        "mission_id": "${mission.id}",
-        "hypothesis_id": "${hypothesis.id}",
-        "measurements": {
-            "metric_1": 0.0,
-            "metric_2": 0.0,
-        },
-        "hypothesis_supported": False,
-    }
+const durationMs = performance.now() - startedAt;
+const throughput = iterations / Math.max(durationMs / 1000, 0.000001);
+const result = {
+  status: ${JSON.stringify(isBaseline ? "completed" : "inconclusive")},
+  hypothesisSupported: null,
+  measurements: {
+    iterations,
+    duration_ms: Number(durationMs.toFixed(3)),
+    operations_per_second: Number(throughput.toFixed(2)),
+    checksum
+  },
+  metricUpdates: ${JSON.stringify(metricUpdates)},
+  findings: [
+    ${JSON.stringify(
+      isBaseline
+        ? "A deterministic local execution baseline was measured."
+        : "A deterministic probe ran, but it did not implement the domain-specific intervention.",
+    )}
+  ],
+  unexpectedFindings: [],
+  knowledgeGaps: ${
+    isBaseline
+      ? "[]"
+      : JSON.stringify([
+          `A mission-specific intervention is required to test: ${hypothesis.statement}`,
+        ])
+  },
+  nextSteps: ${
+    isBaseline
+      ? JSON.stringify([
+          `Design a mission-specific intervention for: ${hypothesis.statement}`,
+        ])
+      : JSON.stringify([
+          "Use configured LLM reasoning or provide reviewed experiment code.",
+        ])
+  }
+};
 
-    elapsed = time.time() - start_time
-    results["duration_seconds"] = elapsed
-
-    print(f"Experiment completed in {elapsed:.2f}s")
-    return results
-
-if __name__ == "__main__":
-    results = run_experiment()
-
-    # Save results
-    with open("results.json", "w") as f:
-        json.dump(results, f, indent=2)
-
-    print("Results saved to results.json")
+await writeFile("results.json", JSON.stringify(result, null, 2) + "\\n", "utf8");
+console.log(JSON.stringify(result.measurements));
 `;
 }

@@ -1,83 +1,73 @@
 /**
- * State checkpoint - periodic saving of agent state
- *
- * Checkpoints are saved after key operations (e.g., completing a task,
- * running an experiment, compiling the wiki) to ensure context is preserved
- * for handoff to the next agent session.
+ * Atomic agent-state checkpoints.
  */
 
-import * as fs from "fs";
-import * as path from "path";
-import * as os from "os";
-import type { AgentState } from "../types/agent-state";
+import {
+  mkdir,
+  open,
+  readFile,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import type { AgentState, DeepPartial } from "../types/agent-state.js";
 
 const STATE_FILE = ".agent-state.json";
+const LOCK_FILE = ".agent-state.lock";
+const MERGED_ARRAY_PATHS = new Set([
+  "context.keyFindings",
+  "context.openQuestions",
+  "context.decisions",
+  "context.warnings",
+  "evolution.knowledgeGaps",
+  "evolution.proposedIdeas",
+  "evolution.improvements",
+  "sync.conflicts",
+]);
 
-/**
- * Save a checkpoint with state updates
- *
- * Merges the provided updates into the existing state and writes to disk.
- */
 export async function saveCheckpoint(
-  updates: Partial<AgentState>,
-  projectRoot: string = process.cwd()
-): Promise<void> {
-  const statePath = path.join(projectRoot, STATE_FILE);
+  updates: DeepPartial<AgentState>,
+  projectRoot: string = process.cwd(),
+): Promise<AgentState> {
+  await mkdir(projectRoot, { recursive: true });
+  return withStateLock(projectRoot, async () => {
+    const statePath = path.join(projectRoot, STATE_FILE);
+    const state = existsSync(statePath)
+      ? parseState(await readFile(statePath, "utf8"), statePath)
+      : createEmptyState();
+    const merged = mergeValue(state, updates, "") as AgentState;
+    merged.lastUpdated = new Date().toISOString();
+    merged.device = os.hostname();
 
-  let state: AgentState;
-
-  if (fs.existsSync(statePath)) {
-    const content = fs.readFileSync(statePath, "utf-8");
-    state = JSON.parse(content);
-  } else {
-    state = createEmptyState();
-  }
-
-  // Merge updates
-  state = deepMerge(state, updates);
-  state.lastUpdated = new Date().toISOString();
-  state.device = os.hostname();
-
-  // Write to disk
-  fs.writeFileSync(statePath, JSON.stringify(state, null, 2) + "\n");
-
-  const timestamp = new Date().toLocaleTimeString();
-  console.log(`✅ Checkpoint saved at ${timestamp}`);
+    await atomicWrite(statePath, `${JSON.stringify(merged, null, 2)}\n`);
+    return merged;
+  });
 }
 
-/**
- * Wrap an operation with automatic checkpointing
- *
- * Usage:
- *   await withCheckpoint(
- *     async () => runExperiment(),
- *     { exploration: { experimentsRun: state.exploration.experimentsRun + 1 } }
- *   );
- */
 export async function withCheckpoint<T>(
   operation: () => Promise<T>,
-  stateUpdate: Partial<AgentState>,
-  projectRoot: string = process.cwd()
+  stateUpdate: DeepPartial<AgentState>,
+  projectRoot: string = process.cwd(),
 ): Promise<T> {
   const result = await operation();
   await saveCheckpoint(stateUpdate, projectRoot);
   return result;
 }
 
-/**
- * Create an empty state for new projects
- */
-function createEmptyState(): AgentState {
+export function createEmptyState(): AgentState {
+  const now = new Date().toISOString();
   return {
     version: "1.0.0",
-    lastUpdated: new Date().toISOString(),
+    lastUpdated: now,
     device: os.hostname(),
-
     session: {
       id: generateId(),
-      startedAt: new Date().toISOString(),
+      startedAt: now,
     },
-
     mission: {
       id: "",
       path: "",
@@ -93,7 +83,6 @@ function createEmptyState(): AgentState {
         currency: "USD",
       },
     },
-
     knowledge: {
       wikiPath: "",
       lastCompileAt: "",
@@ -101,30 +90,28 @@ function createEmptyState(): AgentState {
       pageCount: 0,
       lastSyncCommit: "",
     },
-
     exploration: {
       hypothesesGenerated: 0,
       experimentsRun: 0,
       successfulExperiments: 0,
     },
-
     evolution: {
       lastReflectionAt: "",
       knowledgeGaps: [],
       proposedIdeas: [],
       improvements: [],
     },
-
     context: {
       keyFindings: [],
       openQuestions: [],
       decisions: [],
       warnings: [],
     },
-
     sync: {
-      gitRemote: "",
-      gitBranch: "main",
+      gitRemote: "origin",
+      gitBranch: "master",
+      wikiRemote: "origin",
+      wikiBranch: "master",
       lastPullAt: "",
       lastPushAt: "",
       conflicts: [],
@@ -132,68 +119,158 @@ function createEmptyState(): AgentState {
   };
 }
 
-/**
- * Deep merge two objects
- *
- * Arrays are concatenated, primitives are overwritten, objects are recursively merged.
- */
-function deepMerge<T>(target: T, source: Partial<T>): T {
-  const result = { ...target };
-
-  for (const key in source) {
-    const sourceValue = source[key];
-    const targetValue = result[key];
-
-    if (sourceValue === undefined) {
-      continue;
-    }
-
-    if (Array.isArray(sourceValue) && Array.isArray(targetValue)) {
-      // Concatenate arrays (deduplicate strings)
-      if (typeof sourceValue[0] === "string") {
-        (result as any)[key] = [...new Set([...targetValue, ...sourceValue])];
-      } else {
-        (result as any)[key] = [...targetValue, ...sourceValue];
-      }
-    } else if (
-      typeof sourceValue === "object" &&
-      sourceValue !== null &&
-      typeof targetValue === "object" &&
-      targetValue !== null
-    ) {
-      // Recursively merge objects
-      (result as any)[key] = deepMerge(targetValue, sourceValue);
-    } else {
-      // Overwrite primitives
-      (result as any)[key] = sourceValue;
-    }
-  }
-
-  return result;
-}
-
-/**
- * Generate a random ID for sessions
- */
-function generateId(): string {
-  return `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-}
-
-/**
- * Read current state snapshot
- */
-export function loadState(projectRoot: string = process.cwd()): AgentState | null {
+export function loadState(
+  projectRoot: string = process.cwd(),
+): AgentState | null {
   const statePath = path.join(projectRoot, STATE_FILE);
-
-  if (!fs.existsSync(statePath)) {
+  if (!existsSync(statePath)) {
     return null;
   }
+
+  return parseState(readFileSync(statePath, "utf8"), statePath);
+}
+
+function parseState(content: string, statePath: string): AgentState {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to parse ${statePath}: ${message}`);
+  }
+
+  if (!isRecord(parsed) || typeof parsed.version !== "string") {
+    throw new Error(`Invalid agent state in ${statePath}`);
+  }
+
+  return normalizeState(parsed as unknown as AgentState);
+}
+
+function normalizeState(state: AgentState): AgentState {
+  const empty = createEmptyState();
+  return mergeValue(empty, state, "") as AgentState;
+}
+
+function mergeValue(
+  target: unknown,
+  source: unknown,
+  keyPath: string,
+): unknown {
+  if (source === undefined) {
+    return target;
+  }
+
+  if (Array.isArray(source)) {
+    if (!Array.isArray(target) || !MERGED_ARRAY_PATHS.has(keyPath)) {
+      return structuredClone(source);
+    }
+    return mergeUniqueArray(target, source);
+  }
+
+  if (isRecord(target) && isRecord(source)) {
+    const result: Record<string, unknown> = { ...target };
+    for (const [key, sourceValue] of Object.entries(source)) {
+      const childPath = keyPath ? `${keyPath}.${key}` : key;
+      result[key] = mergeValue(result[key], sourceValue, childPath);
+    }
+    return result;
+  }
+
+  return source;
+}
+
+function mergeUniqueArray(target: unknown[], source: unknown[]): unknown[] {
+  const combined = [...target, ...source];
+  const seen = new Set<string>();
+  return combined.filter((value) => {
+    const key = stableKey(value);
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+function stableKey(value: unknown): string {
+  return typeof value === "string" ? `string:${value}` : JSON.stringify(value);
+}
+
+async function atomicWrite(filePath: string, content: string): Promise<void> {
+  const temporary = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  await writeFile(temporary, content, "utf8");
+  await rename(temporary, filePath);
+}
+
+async function withStateLock<T>(
+  projectRoot: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const lockPath = path.join(projectRoot, LOCK_FILE);
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    try {
+      handle = await open(lockPath, "wx");
+      break;
+    } catch (error) {
+      if (!isAlreadyExists(error) || attempt === 39) {
+        throw error;
+      }
+      await removeStaleLock(lockPath);
+      await delay(25);
+    }
+  }
+
+  if (!handle) {
+    throw new Error(`Unable to acquire state lock: ${lockPath}`);
+  }
+  await handle.writeFile(
+    JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }),
+    "utf8",
+  );
 
   try {
-    const content = fs.readFileSync(statePath, "utf-8");
-    return JSON.parse(content);
-  } catch (error) {
-    console.error(`Failed to load state: ${(error as Error).message}`);
-    return null;
+    return await operation();
+  } finally {
+    await handle.close();
+    await rm(lockPath, { force: true });
   }
+}
+
+async function removeStaleLock(lockPath: string): Promise<void> {
+  try {
+    const metadata = await stat(lockPath);
+    if (Date.now() - metadata.mtimeMs > 60_000) {
+      await rm(lockPath, { force: true });
+    }
+  } catch (error) {
+    if (!isNotFound(error)) {
+      throw error;
+    }
+  }
+}
+
+function isAlreadyExists(error: unknown): boolean {
+  return (
+    isRecord(error) && typeof error.code === "string" && error.code === "EEXIST"
+  );
+}
+
+function isNotFound(error: unknown): boolean {
+  return (
+    isRecord(error) && typeof error.code === "string" && error.code === "ENOENT"
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function generateId(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

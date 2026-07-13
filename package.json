@@ -1,17 +1,23 @@
 {
   "name": "intelligent-agent-system",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Self-evolving autonomous agent system with mission-driven exploration and knowledge compilation",
   "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "npm@11.16.0",
   "workspaces": [
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspaces",
-    "test": "npm test --workspaces",
-    "lint": "npm run lint --workspaces",
+    "build": "npm run build --workspace @intelligent-agent/shared && npm run build --workspace @intelligent-agent-system/llm-wiki-compiler && npm run build --workspace autonomous-agent",
+    "typecheck": "npm run typecheck --workspace @intelligent-agent/shared && npm run typecheck --workspace @intelligent-agent-system/llm-wiki-compiler && npm run typecheck --workspace autonomous-agent",
+    "test": "npm test --workspace @intelligent-agent/shared && npm test --workspace @intelligent-agent-system/llm-wiki-compiler && npm test --workspace autonomous-agent",
+    "lint": "npm run lint --workspace @intelligent-agent/shared && npm run lint --workspace @intelligent-agent-system/llm-wiki-compiler && npm run lint --workspace autonomous-agent && npm run format:check",
     "format": "prettier --write \"packages/**/*.ts\"",
-    "clean": "npm run clean --workspaces"
+    "format:check": "prettier --check \"packages/**/*.ts\"",
+    "clean": "npm run clean --workspace autonomous-agent && npm run clean --workspace @intelligent-agent-system/llm-wiki-compiler && npm run clean --workspace @intelligent-agent/shared"
   },
   "keywords": [
     "ai",
@@ -24,8 +30,9 @@
   "author": "linzili",
   "license": "MIT",
   "devDependencies": {
-    "typescript": "^7.0.2",
-    "prettier": "^3.4.2",
-    "@types/node": "^26.1.1"
+    "@types/node": "26.1.0",
+    "prettier": "3.4.2",
+    "tsx": "4.23.0",
+    "typescript": "6.0.3"
   }
 }

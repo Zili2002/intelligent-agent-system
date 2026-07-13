@@ -15,9 +15,13 @@ import { executeInLocal } from "./local.js";
 export async function executeExperiment(
   experiment: Experiment,
   config: AgentConfig,
-  experimentDir: string
+  experimentDir: string,
 ): Promise<ExecutionResult> {
-  const scriptPath = path.join(experimentDir, "experiment.py");
+  const entrypoint =
+    experiment.design.entrypoint ??
+    defaultEntrypoint(experiment.design.codeLanguage);
+  const scriptPath = path.join(experimentDir, entrypoint);
+  const runtime = runtimeFor(experiment.design.codeLanguage);
 
   console.log(`🔬 Executing experiment: ${experiment.id}`);
   console.log(`   Sandbox: ${config.sandbox.type}`);
@@ -26,6 +30,8 @@ export async function executeExperiment(
   const options = {
     workDir: experimentDir,
     timeout: getSandboxTimeout(config),
+    command: runtime.command,
+    args: [scriptPath],
     env: {
       EXPERIMENT_ID: experiment.id,
       MISSION_ID: experiment.missionId,
@@ -66,8 +72,45 @@ export async function executeExperiment(
   }
 }
 
+function defaultEntrypoint(
+  language: Experiment["design"]["codeLanguage"],
+): string {
+  switch (language) {
+    case "python":
+      return "experiment.py";
+    case "bash":
+      return "experiment.sh";
+    case "typescript":
+      return "experiment.ts";
+    case "javascript":
+    case undefined:
+      return "experiment.mjs";
+  }
+}
+
+function runtimeFor(language: Experiment["design"]["codeLanguage"]): {
+  command: string;
+} {
+  switch (language) {
+    case "python":
+      return {
+        command: process.platform === "win32" ? "python" : "python3",
+      };
+    case "bash":
+      return { command: "bash" };
+    case "typescript":
+      return { command: "tsx" };
+    case "javascript":
+    case undefined:
+      return { command: process.execPath };
+  }
+}
+
 function getSandboxTimeout(config: AgentConfig): number {
-  if (config.sandbox.type === "docker" && config.sandbox.docker) {
+  if (
+    (config.sandbox.type === "docker" || config.sandbox.type === "hybrid") &&
+    config.sandbox.docker
+  ) {
     return config.sandbox.docker.timeout;
   }
   if (config.sandbox.type === "local" && config.sandbox.local) {

@@ -1,207 +1,123 @@
-# Autonomous Agent - Mission-Driven Exploration System
+# Autonomous Agent
 
-A self-evolving AI agent system that autonomously explores, learns, and improves based on high-level mission objectives.
+Mission-driven exploration with durable state, sandboxed experiments, result
+analysis, reflection, and bounded autonomous continuation.
 
-## 🎯 What We Built (Phase 1)
+## Implemented loop
 
-We've successfully implemented the **basic exploration cycle** - the foundation of the autonomous agent system:
+```text
+Orient -> Hypothesize -> Design -> Safety/Approval -> Execute
+       -> Analyze -> Reflect -> Decide -> Checkpoint
+```
 
-### Core Components
+Each experiment is stored under `experiments/<experiment-id>/` with:
 
-✅ **Mission Management**
-- Parse mission markdown files
-- Track progress and budget
-- Manage checkpoints and metrics
+- `experiment.json` — hypothesis, design, status, execution, and analysis
+- `experiment.mjs` (or another configured entrypoint) — executable code
+- `results.json` — structured evidence produced by the experiment
+- `reflection.json` — lessons and knowledge extracted from verified results
 
-✅ **Orient Engine**
-- Analyze current situation
-- Identify opportunities and risks
-- Generate recommendations
+Mission state is stored atomically under
+`missions/active/<mission-id>.state.json`. Cross-session context is also
+checkpointed to the workspace `.agent-state.json`.
 
-✅ **Hypothesis Generator**
-- Generate testable hypotheses from situation analysis
-- Rank by confidence and potential impact
+## Setup
 
-✅ **Experiment Designer**
-- Design experiments to test hypotheses
-- Generate executable code (Python templates)
-- Plan experiment steps
-
-✅ **CLI Interface**
-- `mission-start` - Start a new mission
-- `mission-status` - Check mission progress
-- `orient` - Run situation analysis
-- `explore` - Full exploration cycle
-
-## 🚀 Quick Start
-
-### Installation
+From the monorepo root:
 
 ```bash
-cd ~/autonomous-agent
 npm install
 npm run build
 ```
 
-### Usage
-
-1. **Create a mission** (see `missions/active/test-mission-001.md`)
-2. **Start the mission:**
-   ```bash
-   node dist/cli.js mission-start test-mission-001.md
-   ```
-3. **Run exploration cycle:**
-   ```bash
-   node dist/cli.js explore <mission-id>
-   ```
-4. **Check generated experiment:**
-   ```bash
-   cd experiments/<exp-id>
-   python experiment.py
-   ```
-
-## 📁 Project Structure
-
-```
-autonomous-agent/
-├── missions/                # Mission definitions
-│   ├── active/             # Active missions
-│   └── templates/          # Mission templates
-├── experiments/            # Generated experiments
-├── src/
-│   ├── types/             # TypeScript type definitions
-│   ├── mission/           # Mission parsing and management
-│   │   ├── parser.ts      # Parse mission markdown
-│   │   └── manager.ts     # Mission lifecycle
-│   ├── exploration/       # Exploration engine
-│   │   ├── orient.ts      # Situation analysis
-│   │   ├── hypothesize.ts # Hypothesis generation
-│   │   └── design.ts      # Experiment design
-│   └── cli.ts             # Command-line interface
-└── dist/                   # Compiled JavaScript
-```
-
-## 🔄 The Exploration Cycle
-
-```
-1. Orient    → Analyze current situation
-2. Hypothesize → Generate testable hypotheses
-3. Design    → Create experiment plan
-4. Execute   → Run experiment (manual for now)
-5. Analyze   → Extract insights (coming soon)
-6. Reflect   → Update knowledge (coming soon)
-7. Decide    → Next action (coming soon)
-```
-
-**Phase 1 Status:** Steps 1-3 complete ✅
-
-## 📊 Example Output
+Initialize a workspace:
 
 ```bash
-$ node dist/cli.js explore mission-test-autonomous-exploration-system-mrdt0p2b
-
-🚀 Starting exploration cycle...
-
-[1/3] 🧭 Orient: Analyzing current situation...
-      Found 1 opportunities, 0 risks
-
-[2/3] 💭 Hypothesize: Generating hypotheses...
-      Generated 2 hypotheses
-      1. Establishing baseline performance will reveal current system capabilities (90%)
-      2. Fresh start - design exploratory baseline experiments (70%)
-
-[3/3] 🔬 Design: Creating experiment for top hypothesis...
-      ✅ Experiment designed: exp-1783619566603
-      📁 Saved to: /home/linzili/autonomous-agent/experiments/exp-1783619566603
+node packages/autonomous-agent/dist/cli.js --root <workspace> init
 ```
 
-## 🎓 Key Concepts
+The generated `.agent-config.json` controls the reasoning mode, sandbox,
+budget thresholds, wiki path, and maximum iterations.
 
-### Mission-Driven Development
-Instead of giving the agent specific tasks, you define:
-- **Objective**: What success looks like
-- **Constraints**: Time, resources, boundaries
-- **Metrics**: How to measure success
-- **Budget**: Resource limits
-
-The agent autonomously decides HOW to achieve the objective.
-
-### High-Density Context
-All information lives in one repo:
-- Missions in markdown
-- Experiments as code
-- Results as JSON
-- No external dependencies
-
-### Exploration Cycle
-The agent continuously:
-1. Analyzes where it is
-2. Generates ideas
-3. Designs experiments
-4. Executes and learns
-5. Adjusts strategy
-
-## 🗓️ Roadmap
-
-### ✅ Phase 1: Basic Exploration (COMPLETED)
-- Mission parser
-- Orient analysis
-- Hypothesis generation
-- Experiment design
-- CLI commands
-
-### 🔄 Phase 2: Execution & Safety (Next)
-- Docker sandbox
-- Experiment execution
-- Result analysis
-- Reflection engine
-- Budget tracking
-
-### 📅 Phase 3: Autonomous Learning
-- Web search integration
-- Knowledge base integration
-- Auto-ingest pipeline
-- Cron-based exploration
-
-### 📅 Phase 4: Self-Evolution
-- Performance analysis
-- Capability improvement
-- Code self-modification
-- Graceful restart
-
-## 🧪 Testing
-
-Run the test mission:
+## Commands
 
 ```bash
-# Start test mission
-node dist/cli.js mission-start test-mission-001.md
+# Start and persist a Markdown mission
+autonomous-agent --root <workspace> mission-start <mission.md>
 
-# Get mission ID from output, then explore
-node dist/cli.js explore mission-test-autonomous-exploration-system-<id>
+# Inspect current progress
+autonomous-agent --root <workspace> mission-status <mission-id>
+autonomous-agent --root <workspace> orient <mission-id>
 
-# Check generated experiment
-ls experiments/
+# Run one complete cycle
+autonomous-agent --root <workspace> explore <mission-id>
+
+# Run bounded cycles until complete or paused
+autonomous-agent --root <workspace> run <mission-id> --max-cycles 3
+
+# Explicitly allow Wiki gap search/import for this invocation
+autonomous-agent --root <workspace> explore <mission-id> --learn
+
+# Resume a checkpointed or approval-gated experiment
+autonomous-agent --root <workspace> experiment-resume \
+  <mission-id> <experiment-id> --approve
+
+# Read local handoff context; Git pulls are explicit
+autonomous-agent --root <workspace> onboard
+autonomous-agent --root <workspace> onboard --pull --pull-wiki
+
+# Local checkpoint by default; Git effects require explicit flags
+autonomous-agent --root <workspace> handoff --reason paused
+autonomous-agent --root <workspace> handoff --commit
 ```
 
-## 📚 Documentation
+## Reasoning modes
 
-- [Full Design Document](../mission-driven-autonomous-agent-system.md)
-- [Implementation Report](../自进化知识库系统-实现完成报告.md)
+- `rule-based`: deterministic offline design. It runs a reproducible local
+  probe and explicitly reports when domain-specific evidence is still missing.
+- `llm`: requires `ANTHROPIC_API_KEY`; missing credentials are an error.
+- `hybrid`: uses Anthropic when configured and otherwise reports that it is
+  using the offline designer.
 
-## 🎉 Achievement Unlocked
+The offline designer never represents a generic probe as proof of a
+mission-specific hypothesis.
 
-We've built the **foundation for autonomous exploration**:
-- ✅ Parses high-level missions
-- ✅ Analyzes situation autonomously
-- ✅ Generates hypotheses
-- ✅ Designs experiments
-- ✅ Generates executable code
+## Sandboxes
 
-**Next:** Make it actually execute and learn! 🚀
+- `docker`: default isolation with resource, capability, process, filesystem,
+  and network restrictions. Docker must be installed.
+- `local`: explicit process execution using an allowlist. The default allows
+  only the current Node executable.
+- `hybrid`: local for short configured experiments and Docker otherwise.
 
----
+Generated code is statically checked before execution. Child processes,
+network access, dynamic evaluation, process termination, and parent-directory
+traversal are rejected. Static checks complement rather than replace Docker
+isolation.
 
-**Created:** 2026-07-10  
-**Status:** Phase 1 Complete  
-**Author:** Claude Code (Fable 5)
+For a local offline run:
+
+```bash
+autonomous-agent --root <workspace> explore <mission-id> \
+  --sandbox local --offline
+```
+
+## Approval and budgets
+
+Mission budget fields and `.agent-config.json` determine whether an experiment
+can be auto-approved. Hard safety violations cannot be approved. Explicit
+approval is available through `--approve`, and continuous runs stop when
+success metrics, budget thresholds, or iteration limits require it.
+
+Model-specific input/output pricing is configurable; the agent does not assume
+pricing for an arbitrary model. Active Wiki search is disabled by default
+because it performs external network requests.
+
+## Tests
+
+```bash
+npm test --workspace autonomous-agent
+```
+
+Tests use temporary workspaces, the installed Node runtime, and deterministic
+offline reasoning. They do not perform paid API calls or network searches.

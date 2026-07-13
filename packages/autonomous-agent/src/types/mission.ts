@@ -6,7 +6,12 @@
  */
 
 /** Mission status */
-export type MissionStatus = "pending" | "active" | "paused" | "completed" | "failed";
+export type MissionStatus =
+  | "pending"
+  | "active"
+  | "paused"
+  | "completed"
+  | "failed";
 
 /** Priority level */
 export type Priority = "low" | "medium" | "high" | "critical";
@@ -17,6 +22,9 @@ export interface Budget {
   llmTokensUsed: number;
   computeHours: number;
   computeHoursUsed: number;
+  costLimit: number;
+  costSpent: number;
+  currency: "USD";
   approvalRequired: boolean;
 }
 
@@ -47,6 +55,7 @@ export interface Mission {
   id: string;
   name: string;
   objective: string;
+  sourcePath?: string;
   status: MissionStatus;
   priority: Priority;
 
@@ -56,11 +65,16 @@ export interface Mission {
   budget: Budget;
 
   createdAt: string;
+  updatedAt: string;
   startedAt?: string;
   completedAt?: string;
 
   experimentIds: string[];
   notes: string[];
+  findings: string[];
+  knowledgeGaps: string[];
+  iteration: number;
+  maxIterations: number;
 }
 
 /** Mission progress report */
@@ -73,6 +87,7 @@ export interface MissionProgress {
   checkpointsTotal: number;
   budgetUsedPercent: number;
   experimentsCompleted: number;
+  iteration: number;
   daysElapsed: number;
   estimatedCompletion?: string;
 }

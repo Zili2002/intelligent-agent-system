@@ -1,0 +1,10 @@
+.git
+.github
+.agent-state.json
+.env*
+**/node_modules
+**/dist
+**/coverage
+**/*.log
+packages/autonomous-agent/experiments
+packages/autonomous-agent/missions/active/*.state.json

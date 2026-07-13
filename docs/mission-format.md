@@ -11,6 +11,7 @@ Mission documents define what the agent should explore and how. They are markdow
 **Budget**: $X USD  
 **Duration**: X days/weeks  
 **Priority**: Low | Medium | High | Critical
+**Iterations**: Maximum autonomous cycles
 
 ## Objective
 
@@ -255,9 +256,14 @@ The agent parser extracts:
 - Budget
 - Duration
 - Priority
+- Maximum iterations
 - Objective (first paragraph after "## Objective")
 - Success criteria (list items)
 - Constraints (list items)
+
+Both `## Success Criteria` and `## Success Metrics` are accepted. List items
+may use bullets or numbered Markdown. Numeric targets support `>=`, `<=`, `>`,
+`<`, `=`, `≥`, and `≤`.
 
 This metadata is used to track progress and make decisions about resource allocation.
 

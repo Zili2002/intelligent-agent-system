@@ -8,6 +8,7 @@
 /** Experiment status */
 export type ExperimentStatus =
   | "designed"
+  | "awaiting_approval"
   | "approved"
   | "running"
   | "completed"
@@ -35,7 +36,8 @@ export interface Experiment {
     description: string;
     steps: string[];
     code?: string;
-    codeLanguage?: "typescript" | "python" | "bash";
+    codeLanguage?: "javascript" | "typescript" | "python" | "bash";
+    entrypoint?: string;
     expectedDuration: string;
     resourceEstimate: {
       cpu: number;
@@ -50,28 +52,44 @@ export interface Experiment {
     exitCode?: number;
     stdout?: string;
     stderr?: string;
-    metricsCollected?: Record<string, any>;
+    durationSeconds?: number;
+    metricsCollected?: Record<string, unknown>;
   };
 
   analysis?: {
     success: boolean;
-    hypothesisSupported: boolean;
+    hypothesisSupported: boolean | null;
     insights: string[];
     unexpectedFindings: string[];
     nextSteps: string[];
+    metricUpdates: Record<string, string>;
+    measurements: Record<string, unknown>;
+    knowledgeGaps: string[];
   };
 
   createdAt: string;
   approvedAt?: string;
   completedAt?: string;
+  updatedAt?: string;
 }
 
 /** Experiment result summary */
 export interface ExperimentResult {
   experimentId: string;
   success: boolean;
-  hypothesisSupported: boolean;
+  hypothesisSupported: boolean | null;
   keyInsights: string[];
   dataGenerated: string[]; // file paths
   knowledgeUpdates: string[]; // wiki pages to update
+}
+
+export interface ExperimentResultDocument {
+  status: "completed" | "failed" | "inconclusive";
+  hypothesisSupported?: boolean | null;
+  measurements?: Record<string, unknown>;
+  metricUpdates?: Record<string, string | number | boolean>;
+  findings?: string[];
+  unexpectedFindings?: string[];
+  knowledgeGaps?: string[];
+  nextSteps?: string[];
 }

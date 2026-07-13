@@ -1,234 +1,198 @@
 /**
- * Agent onboarding - context synchronization on startup
- *
- * When an agent starts on a new device or after a break, this module:
- * 1. Pulls latest code and state from Git
- * 2. Loads the state snapshot
- * 3. Syncs the knowledge base
- * 4. Generates a human-readable context summary
+ * Explicit, branch-aware context onboarding.
  */
 
-import * as fs from "fs";
-import * as path from "path";
-import { execSync } from "child_process";
-import type { AgentState, OnboardResult } from "../types/agent-state";
+import { existsSync } from "node:fs";
+import path from "node:path";
+import { execFileSync } from "node:child_process";
+import type { AgentState, OnboardResult } from "../types/agent-state.js";
+import { loadState, saveCheckpoint } from "./checkpoint.js";
 
-const STATE_FILE = ".agent-state.json";
+export interface OnboardOptions {
+  projectRoot?: string;
+  pullCode?: boolean;
+  pullWiki?: boolean;
+  remote?: string;
+  branch?: string;
+  wikiRemote?: string;
+  wikiBranch?: string;
+}
 
-/**
- * Main onboarding flow
- *
- * Call this at agent startup to sync context from the repository.
- */
 export async function onboardAgent(
-  projectRoot: string = process.cwd()
+  optionsOrRoot: OnboardOptions | string = {},
 ): Promise<OnboardResult> {
-  console.log("🔄 Syncing context from repository...\n");
+  const options =
+    typeof optionsOrRoot === "string"
+      ? { projectRoot: optionsOrRoot }
+      : optionsOrRoot;
+  const projectRoot = path.resolve(options.projectRoot ?? process.cwd());
+  const warnings: string[] = [];
+  const previousState = loadState(projectRoot);
 
-  // 1. Pull latest code
-  await pullLatestCode(projectRoot);
+  if (options.pullCode) {
+    const remote = options.remote ?? previousState?.sync.gitRemote ?? "origin";
+    const branch =
+      options.branch ??
+      previousState?.sync.gitBranch ??
+      currentBranch(projectRoot);
+    try {
+      pullRepository(projectRoot, remote, branch);
+    } catch (error) {
+      warnings.push(errorMessage(error));
+    }
+  }
 
-  // 2. Load state snapshot
-  const state = loadStateSnapshot(projectRoot);
+  let state = loadState(projectRoot);
+  if (!state) {
+    return {
+      state: null,
+      summary: null,
+      isResume: false,
+      warnings,
+    };
+  }
 
-  if (state) {
-    console.log(
-      `📋 Loaded state from ${state.device} (${formatTimestamp(state.lastUpdated)})\n`
+  if (options.pullCode && warnings.length === 0) {
+    state = await saveCheckpoint(
+      {
+        sync: {
+          gitRemote: options.remote ?? state.sync.gitRemote ?? "origin",
+          gitBranch: options.branch ?? currentBranch(projectRoot),
+          lastPullAt: new Date().toISOString(),
+        },
+      },
+      projectRoot,
     );
-  } else {
-    console.log("📋 No previous state found. Starting fresh.\n");
   }
 
-  // 3. Sync knowledge base if it exists
-  if (state?.knowledge.wikiPath) {
-    await syncWiki(state.knowledge.wikiPath);
+  if (options.pullWiki && state.knowledge.wikiPath) {
+    const wikiPath = path.resolve(projectRoot, state.knowledge.wikiPath);
+    if (!existsSync(path.join(wikiPath, ".git"))) {
+      warnings.push(`Wiki path is not a Git repository: ${wikiPath}`);
+    } else {
+      const remote =
+        options.wikiRemote ?? state.sync.wikiRemote ?? state.sync.gitRemote;
+      const branch =
+        options.wikiBranch ?? state.sync.wikiBranch ?? currentBranch(wikiPath);
+      try {
+        pullRepository(wikiPath, remote || "origin", branch);
+        state = await saveCheckpoint(
+          {
+            sync: {
+              wikiRemote: remote || "origin",
+              wikiBranch: branch,
+            },
+            knowledge: {
+              lastSyncCommit: currentCommit(wikiPath),
+            },
+          },
+          projectRoot,
+        );
+      } catch (error) {
+        warnings.push(errorMessage(error));
+      }
+    }
   }
-
-  // 4. Generate context summary
-  const summary = state ? await generateContextSummary(state) : null;
 
   return {
     state,
-    summary,
-    isResume: state?.mission.status === "active",
+    summary: generateContextSummary(state),
+    isResume: state.mission.status === "active",
+    warnings,
   };
 }
 
-/**
- * Pull latest code from Git remote
- */
-async function pullLatestCode(cwd: string): Promise<void> {
-  try {
-    console.log("📥 Pulling latest code...");
-    execSync("git pull --rebase origin main", { cwd, stdio: "inherit" });
-    console.log();
-  } catch (error) {
-    console.warn(
-      "⚠️  Git pull failed. Working with local state.\n"
+function pullRepository(
+  repository: string,
+  remote: string,
+  branch: string,
+): void {
+  if (!remote.trim() || !branch.trim()) {
+    throw new Error(
+      `Git remote and branch must be non-empty for ${repository}`,
     );
   }
-}
 
-/**
- * Load state snapshot from .agent-state.json
- */
-function loadStateSnapshot(projectRoot: string): AgentState | null {
-  const statePath = path.join(projectRoot, STATE_FILE);
-
-  if (!fs.existsSync(statePath)) {
-    return null;
-  }
-
-  try {
-    const content = fs.readFileSync(statePath, "utf-8");
-    return JSON.parse(content) as AgentState;
-  } catch (error) {
-    console.error(
-      `⚠️  Failed to parse state file: ${(error as Error).message}`
-    );
-    return null;
-  }
-}
-
-/**
- * Sync knowledge base from its Git remote
- */
-async function syncWiki(wikiPath: string): Promise<void> {
-  const resolvedPath = path.resolve(wikiPath);
-
-  if (!fs.existsSync(path.join(resolvedPath, ".git"))) {
-    console.warn(`⚠️  Wiki path ${wikiPath} is not a Git repository\n`);
-    return;
-  }
-
-  try {
-    console.log("📚 Syncing knowledge base...");
-    execSync("git pull --rebase origin wiki", {
-      cwd: resolvedPath,
-      stdio: "inherit",
-    });
-    console.log();
-  } catch (error) {
-    console.error(
-      `⚠️  Failed to sync wiki: ${(error as Error).message}\n`
+  const changes = runGit(repository, ["status", "--porcelain"]);
+  if (changes.trim()) {
+    throw new Error(
+      `Skipped Git pull because ${repository} has uncommitted changes`,
     );
   }
+
+  runGit(repository, ["pull", "--ff-only", remote, branch], true);
 }
 
-/**
- * Generate a human-readable context summary
- *
- * This uses an LLM to summarize the state snapshot for quick onboarding.
- * In a real implementation, this would call the Anthropic API.
- * For now, we generate a basic summary from the state object.
- */
-async function generateContextSummary(state: AgentState): Promise<string> {
-  const lines: string[] = [];
+function currentBranch(repository: string): string {
+  const branch = runGit(repository, ["branch", "--show-current"]).trim();
+  if (!branch) {
+    throw new Error(`Cannot determine current Git branch for ${repository}`);
+  }
+  return branch;
+}
 
-  // Session info
-  lines.push(`**Last session**: ${state.device}`);
-  lines.push(`**Updated**: ${formatTimestamp(state.lastUpdated)}`);
-  lines.push("");
+function currentCommit(repository: string): string {
+  return runGit(repository, ["rev-parse", "HEAD"]).trim();
+}
 
-  // Mission status
-  if (state.mission.status === "active") {
-    lines.push(`**Mission**: ${state.mission.id} (${state.mission.status})`);
-    lines.push(`**Phase**: ${state.mission.progress.phase}`);
+function runGit(cwd: string, args: string[], inheritOutput = false): string {
+  return execFileSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    stdio: inheritOutput ? ["ignore", "inherit", "inherit"] : "pipe",
+  }) as string;
+}
+
+function generateContextSummary(state: AgentState): string {
+  const lines = [
+    `**Last session**: ${state.device}`,
+    `**Updated**: ${formatTimestamp(state.lastUpdated)}`,
+    "",
+    `**Mission**: ${state.mission.id || "none"} (${state.mission.status})`,
+    `**Phase**: ${state.mission.progress.phase || "not set"}`,
+    `**Completed tasks**: ${state.mission.progress.completedTasks.length}`,
+  ];
+
+  if (state.mission.budget.limit > 0) {
     lines.push(
-      `**Completed tasks**: ${state.mission.progress.completedTasks.length}`
+      `**Budget**: ${state.mission.budget.spent.toFixed(2)} / ${state.mission.budget.limit} ${state.mission.budget.currency}`,
     );
-    lines.push(
-      `**Budget**: $${state.mission.budget.spent.toFixed(2)} / $${state.mission.budget.limit} (${((state.mission.budget.spent / state.mission.budget.limit) * 100).toFixed(0)}%)`
-    );
-    lines.push("");
+  } else {
+    lines.push("**Budget**: unlimited or not configured");
   }
 
-  // Next actions
   if (state.mission.progress.nextActions.length > 0) {
-    lines.push(`**Next actions**:`);
-    state.mission.progress.nextActions.forEach((action) => {
-      lines.push(`  - ${action}`);
-    });
-    lines.push("");
-  }
-
-  // Exploration progress
-  if (state.exploration.experimentsRun > 0) {
-    lines.push(`**Exploration**:`);
-    lines.push(`  - Hypotheses generated: ${state.exploration.hypothesesGenerated}`);
-    lines.push(`  - Experiments run: ${state.exploration.experimentsRun}`);
-    lines.push(`  - Successful: ${state.exploration.successfulExperiments}`);
-    if (state.exploration.lastExperiment) {
-      lines.push(
-        `  - Last: ${state.exploration.lastExperiment.description} (${state.exploration.lastExperiment.result})`
-      );
+    lines.push("", "**Next actions**:");
+    for (const action of state.mission.progress.nextActions) {
+      lines.push(`- ${action}`);
     }
-    lines.push("");
   }
 
-  // Knowledge base
-  lines.push(`**Knowledge base**:`);
-  lines.push(`  - Sources: ${state.knowledge.sourceCount}`);
-  lines.push(`  - Pages: ${state.knowledge.pageCount}`);
-  lines.push(`  - Last compile: ${formatTimestamp(state.knowledge.lastCompileAt)}`);
-  lines.push("");
-
-  // Key findings
   if (state.context.keyFindings.length > 0) {
-    lines.push(`**Key findings**:`);
-    state.context.keyFindings.slice(0, 5).forEach((finding) => {
-      lines.push(`  - ${finding}`);
-    });
-    if (state.context.keyFindings.length > 5) {
-      lines.push(`  - ... and ${state.context.keyFindings.length - 5} more`);
+    lines.push("", "**Key findings**:");
+    for (const finding of state.context.keyFindings.slice(0, 5)) {
+      lines.push(`- ${finding}`);
     }
-    lines.push("");
   }
 
-  // Open questions
-  if (state.context.openQuestions.length > 0) {
-    lines.push(`**Open questions**:`);
-    state.context.openQuestions.slice(0, 3).forEach((question) => {
-      lines.push(`  - ${question}`);
-    });
-    if (state.context.openQuestions.length > 3) {
-      lines.push(`  - ... and ${state.context.openQuestions.length - 3} more`);
-    }
-    lines.push("");
-  }
-
-  // Warnings
   if (state.context.warnings.length > 0) {
-    lines.push(`**⚠️  Warnings**:`);
-    state.context.warnings.forEach((warning) => {
-      lines.push(`  - ${warning}`);
-    });
-    lines.push("");
+    lines.push("", "**Warnings**:");
+    for (const warning of state.context.warnings) {
+      lines.push(`- ${warning}`);
+    }
   }
 
   return lines.join("\n");
 }
 
-/**
- * Format ISO timestamp to human-readable form
- */
-function formatTimestamp(isoString: string): string {
-  const date = new Date(isoString);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffMins = Math.floor(diffMs / 60000);
-  const diffHours = Math.floor(diffMins / 60);
-  const diffDays = Math.floor(diffHours / 24);
-
-  if (diffDays > 7) {
-    return date.toLocaleDateString();
-  } else if (diffDays > 0) {
-    return `${diffDays} day${diffDays > 1 ? "s" : ""} ago`;
-  } else if (diffHours > 0) {
-    return `${diffHours} hour${diffHours > 1 ? "s" : ""} ago`;
-  } else if (diffMins > 0) {
-    return `${diffMins} minute${diffMins > 1 ? "s" : ""} ago`;
-  } else {
-    return "just now";
+function formatTimestamp(value: string): string {
+  if (!value) {
+    return "never";
   }
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

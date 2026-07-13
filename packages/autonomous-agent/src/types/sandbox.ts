@@ -26,5 +26,7 @@ export interface ExecutionResult {
 export interface ExecutionOptions {
   workDir: string;
   timeout: number;
+  command: string;
+  args: string[];
   env?: Record<string, string>;
 }

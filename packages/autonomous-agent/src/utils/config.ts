@@ -1,56 +1,131 @@
 /**
- * Configuration manager - loads and validates agent configuration.
+ * Agent configuration loading, validation, and persistence.
  */
 
-import { readFile, writeFile, mkdir } from "fs/promises";
-import path from "path";
-import { existsSync } from "fs";
+import { existsSync } from "node:fs";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import path from "node:path";
 import type { AgentConfig } from "../types/config.js";
 import { defaultConfig } from "../types/config.js";
 
 const CONFIG_FILE = ".agent-config.json";
 
-/**
- * Load configuration from file or use defaults.
- */
-export async function loadConfig(root: string = process.cwd()): Promise<AgentConfig> {
+export async function loadConfig(
+  root: string = process.cwd(),
+): Promise<AgentConfig> {
   const configPath = path.join(root, CONFIG_FILE);
+  let config = structuredClone(defaultConfig);
 
   if (existsSync(configPath)) {
-    const content = await readFile(configPath, "utf-8");
-    const userConfig = JSON.parse(content);
-    return mergeConfig(defaultConfig, userConfig);
+    const content = await readFile(configPath, "utf8");
+    const parsed = JSON.parse(content) as unknown;
+    if (!isRecord(parsed)) {
+      throw new Error(`${configPath} must contain a JSON object`);
+    }
+    config = mergeConfig(defaultConfig, parsed as Partial<AgentConfig>);
   }
 
-  return defaultConfig;
+  if (process.env.WIKI_PATH) {
+    config.wikiPath = process.env.WIKI_PATH;
+  }
+  if (process.env.AGENT_SANDBOX) {
+    if (
+      process.env.AGENT_SANDBOX !== "docker" &&
+      process.env.AGENT_SANDBOX !== "local" &&
+      process.env.AGENT_SANDBOX !== "hybrid"
+    ) {
+      throw new Error(
+        "AGENT_SANDBOX must be docker, local, or hybrid when configured",
+      );
+    }
+    config.sandbox.type = process.env.AGENT_SANDBOX;
+  }
+
+  validateConfig(config);
+  return config;
 }
 
-/**
- * Save configuration to file.
- */
 export async function saveConfig(
   config: AgentConfig,
-  root: string = process.cwd()
+  root: string = process.cwd(),
 ): Promise<void> {
+  validateConfig(config);
+  await mkdir(root, { recursive: true });
   const configPath = path.join(root, CONFIG_FILE);
-  await writeFile(configPath, JSON.stringify(config, null, 2));
+  const temporary = `${configPath}.${process.pid}.tmp`;
+  await writeFile(temporary, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  await rename(temporary, configPath);
 }
 
-/**
- * Initialize configuration file if it doesn't exist.
- */
 export async function initConfig(root: string = process.cwd()): Promise<void> {
   const configPath = path.join(root, CONFIG_FILE);
-
   if (!existsSync(configPath)) {
-    await saveConfig(defaultConfig, root);
+    await saveConfig(structuredClone(defaultConfig), root);
   }
 }
 
-/**
- * Deep merge user config with defaults.
- */
-function mergeConfig(defaults: AgentConfig, user: Partial<AgentConfig>): AgentConfig {
+export function validateConfig(config: AgentConfig): void {
+  if (!Number.isInteger(config.maxIterations) || config.maxIterations <= 0) {
+    throw new Error("maxIterations must be a positive integer");
+  }
+  if (
+    !Number.isInteger(config.wikiSearchResultLimit) ||
+    config.wikiSearchResultLimit < 1 ||
+    config.wikiSearchResultLimit > 100
+  ) {
+    throw new Error("wikiSearchResultLimit must be an integer from 1 to 100");
+  }
+
+  if (
+    (config.sandbox.type === "docker" || config.sandbox.type === "hybrid") &&
+    !config.sandbox.docker
+  ) {
+    throw new Error(`${config.sandbox.type} sandbox requires docker settings`);
+  }
+  if (
+    (config.sandbox.type === "local" || config.sandbox.type === "hybrid") &&
+    !config.sandbox.local
+  ) {
+    throw new Error(`${config.sandbox.type} sandbox requires local settings`);
+  }
+  if (
+    config.sandbox.local &&
+    config.sandbox.local.allowedCommands.length === 0
+  ) {
+    throw new Error("sandbox.local.allowedCommands cannot be empty");
+  }
+
+  const thresholds = config.budget.alerts;
+  if (
+    thresholds.warnAt < 0 ||
+    thresholds.warnAt > 100 ||
+    thresholds.stopAt <= 0 ||
+    thresholds.stopAt > 100 ||
+    thresholds.warnAt >= thresholds.stopAt
+  ) {
+    throw new Error("budget alerts must satisfy 0 <= warnAt < stopAt <= 100");
+  }
+
+  if (
+    config.budget.autoApprove.maxComputeHoursPerExperiment <= 0 ||
+    config.budget.autoApprove.maxTokensPerExperiment <= 0
+  ) {
+    throw new Error("auto-approval limits must be positive");
+  }
+
+  if (
+    config.analysis.llm &&
+    (config.analysis.llm.inputCostPerMillionTokens < 0 ||
+      config.analysis.llm.outputCostPerMillionTokens < 0)
+  ) {
+    throw new Error("LLM token pricing values cannot be negative");
+  }
+}
+
+function mergeConfig(
+  defaults: AgentConfig,
+  user: Partial<AgentConfig>,
+): AgentConfig {
   return {
     sandbox: {
       ...defaults.sandbox,
@@ -79,6 +154,16 @@ function mergeConfig(defaults: AgentConfig, user: Partial<AgentConfig>): AgentCo
         ? { ...defaults.budget.alerts, ...user.budget.alerts }
         : defaults.budget.alerts,
     },
+    wikiPath: user.wikiPath ?? defaults.wikiPath,
+    autoCompileWiki: user.autoCompileWiki ?? defaults.autoCompileWiki,
+    autoLearnWiki: user.autoLearnWiki ?? defaults.autoLearnWiki,
+    wikiSearchResultLimit:
+      user.wikiSearchResultLimit ?? defaults.wikiSearchResultLimit,
+    maxIterations: user.maxIterations ?? defaults.maxIterations,
     logLevel: user.logLevel || defaults.logLevel,
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

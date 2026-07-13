@@ -19,14 +19,17 @@ export async function orientAnalysis(mission: Mission): Promise<Situation> {
   const recommendations = generateRecommendations(
     mission,
     opportunities,
-    risks
+    risks,
   );
 
   return {
     missionId: mission.id,
     timestamp,
     currentState: {
-      progress: progress.metricsAchieved / progress.metricsTotal,
+      progress:
+        progress.metricsTotal === 0
+          ? 0
+          : progress.metricsAchieved / progress.metricsTotal,
       metricsAchieved: progress.metricsAchieved,
       experimentsCompleted: progress.experimentsCompleted,
       knowledgeGaps,
@@ -47,7 +50,7 @@ function identifyKnowledgeGaps(mission: Mission): string[] {
   const unachievedMetrics = mission.successMetrics.filter((m) => !m.achieved);
   if (unachievedMetrics.length > 0) {
     gaps.push(
-      `Missing knowledge to achieve ${unachievedMetrics.length} metric(s)`
+      `Missing knowledge to achieve ${unachievedMetrics.length} metric(s)`,
     );
   }
 
@@ -56,7 +59,7 @@ function identifyKnowledgeGaps(mission: Mission): string[] {
 
 function identifyOpportunities(
   mission: Mission,
-  progress: ReturnType<typeof calculateProgress>
+  progress: ReturnType<typeof calculateProgress>,
 ): Situation["opportunities"] {
   const opportunities: Situation["opportunities"] = [];
 
@@ -90,7 +93,7 @@ function identifyOpportunities(
 
 function assessRisks(
   mission: Mission,
-  progress: ReturnType<typeof calculateProgress>
+  progress: ReturnType<typeof calculateProgress>,
 ): Situation["risks"] {
   const risks: Situation["risks"] = [];
 
@@ -116,7 +119,7 @@ function assessRisks(
 function generateRecommendations(
   mission: Mission,
   opportunities: Situation["opportunities"],
-  risks: Situation["risks"]
+  risks: Situation["risks"],
 ): string[] {
   const recommendations: string[] = [];
 

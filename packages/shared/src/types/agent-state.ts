@@ -92,6 +92,8 @@ export interface Decision {
 export interface SyncInfo {
   gitRemote: string;
   gitBranch: string;
+  wikiRemote?: string;
+  wikiBranch?: string;
   lastPullAt: string;
   lastPushAt: string;
   conflicts: Conflict[];
@@ -106,4 +108,12 @@ export interface OnboardResult {
   state: AgentState | null;
   summary: string | null;
   isResume: boolean;
+  warnings: string[];
 }
+
+export type DeepPartial<T> =
+  T extends Array<infer Item>
+    ? Array<Item>
+    : T extends object
+      ? { [Key in keyof T]?: DeepPartial<T[Key]> }
+      : T;

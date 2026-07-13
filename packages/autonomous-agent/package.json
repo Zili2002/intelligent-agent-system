@@ -1,14 +1,19 @@
 {
   "name": "autonomous-agent",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Mission-driven autonomous exploration system",
   "type": "module",
   "main": "./dist/cli.js",
+  "types": "./dist/cli.d.ts",
   "bin": {
     "autonomous-agent": "./dist/cli.js"
   },
   "scripts": {
     "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/**/*.test.ts",
+    "lint": "tsc --noEmit",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "dev": "tsx src/cli.ts",
     "start": "node dist/cli.js"
   },
@@ -23,11 +28,13 @@
   "license": "MIT",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.110.0",
-    "@types/node": "^26.1.1",
+    "@intelligent-agent/shared": "0.2.0",
+    "@intelligent-agent-system/llm-wiki-compiler": "0.2.0",
     "commander": "^15.0.0",
     "dockerode": "^5.0.1",
-    "dotenv": "^17.4.2",
-    "tsx": "^4.23.0",
-    "typescript": "^7.0.2"
+    "dotenv": "^17.4.2"
+  },
+  "devDependencies": {
+    "@types/dockerode": "4.0.1"
   }
 }

@@ -3,9 +3,9 @@
  */
 
 // Types
-export * from "./types/agent-state";
+export * from "./types/agent-state.js";
 
 // Sync modules
-export * from "./sync/onboard";
-export * from "./sync/checkpoint";
-export * from "./sync/handoff";
+export * from "./sync/onboard.js";
+export * from "./sync/checkpoint.js";
+export * from "./sync/handoff.js";

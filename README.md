@@ -1,57 +1,118 @@
 # Intelligent Agent System
 
-A self-evolving autonomous agent system with mission-driven exploration and knowledge compilation.
+A mission-driven research agent and Git-versioned knowledge compiler.
 
-## 🚀 Features
+The system runs bounded exploration cycles, executes reviewed experiments,
+analyzes structured results, reflects on verified findings, and records
+knowledge in a separate Markdown wiki.
 
-- **Mission-Driven Exploration**: Define objectives, constraints, and success metrics; the agent explores autonomously
-- **Knowledge Compilation**: Automatically build and maintain interconnected wiki from raw sources
-- **Self-Evolution**: Learn from experiments, reflect on gaps, propose new ideas
-- **Sandboxed Execution**: Safe Docker-based environment for running experiments
-- **Multi-Device Sync**: Work across devices with Git-based synchronization
+## Packages
 
-## 📦 Packages
+- `packages/autonomous-agent` — mission parsing, hypothesis generation,
+  experiment design, sandbox execution, analysis, reflection, decisions,
+  budgets, approvals, and durable CLI state.
+- `packages/llm-wiki-compiler` — source ingestion, provenance and
+  deduplication, deterministic compilation, cited query, lint, reflection, and
+  active search/learning.
+- `packages/shared` — atomic `.agent-state.json` checkpoints and explicit,
+  branch-aware Git handoff utilities.
 
-- [`autonomous-agent`](./packages/autonomous-agent) - Mission-driven exploration engine
-- [`llm-wiki-compiler`](./packages/llm-wiki-compiler) - Knowledge base compiler with evolution capabilities
+The companion knowledge repository is
+[`Zili2002/my-research-wiki`](https://github.com/Zili2002/my-research-wiki).
 
-## 🏃 Quick Start
+## Requirements
+
+- Node.js 20 or later
+- Git
+- Docker when using the Docker experiment sandbox
+- An Anthropic API key only when `analysis.mode` is `llm` or hybrid LLM
+  reasoning is desired
+
+Tests and the offline workflow do not require paid credentials or network
+search.
+
+## Install
+
+This repository is configured to use the required internal npm registry:
 
 ```bash
-# Install dependencies
 npm install
-
-# Build all packages
 npm run build
-
-# Run autonomous agent
-cd packages/autonomous-agent
-npm run dev -- explore mission.md
-
-# Compile knowledge base
-cd packages/llm-wiki-compiler
-npm run dev -- compile
+npm test
+npm run lint
 ```
 
-## 📖 Documentation
-
-- [Architecture Overview](./docs/architecture.md)
-- [Deployment Guide](./docs/deployment.md)
-- [Mission Document Format](./docs/mission-format.md)
-
-## 🔧 Development
+## Local autonomous-agent example
 
 ```bash
-# Format code
-npm run format
-
-# Type check
+# Build first
 npm run build
 
-# Run tests
-npm test
+# Initialize an isolated workspace
+node packages/autonomous-agent/dist/cli.js --root ./agent-workspace init
+
+# Start a mission
+node packages/autonomous-agent/dist/cli.js \
+  --root ./agent-workspace \
+  mission-start ./examples/missions/example-mission.md
+
+# Run one deterministic cycle through the local Node sandbox
+node packages/autonomous-agent/dist/cli.js \
+  --root ./agent-workspace \
+  explore <mission-id> --sandbox local --offline
 ```
 
-## 📄 License
+Use `run` for bounded continuous cycles and `experiment-resume --approve` for
+review-gated or interrupted experiments.
+
+## Knowledge workflow
+
+Build the `llmwiki` binary, then run it against the sibling wiki repository:
+
+```bash
+llmwiki init
+llmwiki ingest raw/example.md
+llmwiki compile
+llmwiki query "What evidence exists for this topic?"
+llmwiki lint
+llmwiki reflect
+llmwiki search "autonomous agent evaluation"
+llmwiki learn
+llmwiki status
+```
+
+The compiler preserves source provenance and returns no-evidence rather than
+inventing an answer when nothing relevant is indexed.
+
+## State and Git behavior
+
+- Mission and experiment files are written atomically.
+- `.agent-state.json` provides cross-session context.
+- Onboarding is local-only unless `--pull` or `--pull-wiki` is supplied.
+- Handoff checkpoints locally unless commit/push flags are explicitly
+  supplied.
+- Pulls use fast-forward-only behavior and refuse dirty repositories.
+- Automatic external publication is not part of local validation.
+
+## Safety
+
+- Generated experiment code is statically checked before execution.
+- Docker execution restricts resources, capabilities, processes, filesystem,
+  and network access.
+- Local execution is allowlisted and clearly reported as weaker isolation.
+- Mission budgets and iteration limits stop autonomous continuation.
+- LLM token pricing is configurable because model pricing is not assumed.
+- Active-search and reflection output records whether evidence is retrieved or
+  only heuristically inferred.
+
+## Documentation
+
+- [Architecture](./docs/architecture.md)
+- [Deployment](./docs/deployment.md)
+- [Mission format](./docs/mission-format.md)
+- [Multi-device state](./docs/multi-device-sync.md)
+- [Self-evolving knowledge design](./docs/self-evolution-knowledge-base-design.md)
+
+## License
 
 MIT

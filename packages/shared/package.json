@@ -1,12 +1,25 @@
 {
   "name": "@intelligent-agent/shared",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Shared utilities and types for intelligent agent system",
+  "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc",
-    "clean": "rm -rf dist"
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/**/*.test.ts",
+    "lint": "tsc --noEmit",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
   },
   "keywords": [
     "agent",
@@ -14,11 +27,5 @@
     "types"
   ],
   "author": "linzili",
-  "license": "MIT",
-  "dependencies": {
-    "@types/node": "^26.1.1"
-  },
-  "devDependencies": {
-    "typescript": "^7.0.2"
-  }
+  "license": "MIT"
 }

@@ -1,0 +1,43 @@
+{
+  "name": "@intelligent-agent-system/llm-wiki-compiler",
+  "version": "0.2.0",
+  "description": "Deterministic, evidence-first compiler for local research wikis",
+  "type": "module",
+  "bin": {
+    "llmwiki": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test test/*.test.ts",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "0.1.80",
+    "commander": "^14.0.1",
+    "pdf-parse": "2.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "pdf-lib": "1.17.1",
+    "tsx": "^4.23.0",
+    "typescript": "6.0.3"
+  },
+  "license": "MIT"
+}

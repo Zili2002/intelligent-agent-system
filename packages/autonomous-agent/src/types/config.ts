@@ -15,7 +15,7 @@ export interface SandboxConfig {
   };
   local?: {
     timeout: number;
-    allowedCommands?: string[];
+    allowedCommands: string[];
   };
 }
 
@@ -23,9 +23,11 @@ export interface SandboxConfig {
 export interface AnalysisConfig {
   mode: "rule-based" | "llm" | "hybrid";
   llm?: {
-    provider: "anthropic" | "openai";
+    provider: "anthropic";
     model: string;
     maxTokens: number;
+    inputCostPerMillionTokens: number;
+    outputCostPerMillionTokens: number;
   };
 }
 
@@ -47,6 +49,11 @@ export interface AgentConfig {
   sandbox: SandboxConfig;
   analysis: AnalysisConfig;
   budget: BudgetConfig;
+  wikiPath?: string;
+  autoCompileWiki: boolean;
+  autoLearnWiki: boolean;
+  wikiSearchResultLimit: number;
+  maxIterations: number;
   logLevel: "debug" | "info" | "warn" | "error";
 }
 
@@ -55,12 +62,16 @@ export const defaultConfig: AgentConfig = {
   sandbox: {
     type: "docker",
     docker: {
-      image: "python:3.11-slim",
+      image: "node:24-bookworm-slim",
       cpuLimit: 2,
       memoryLimit: "2g",
       diskLimit: "1g",
       networkMode: "none",
       timeout: 300, // 5 minutes
+    },
+    local: {
+      timeout: 300,
+      allowedCommands: ["node"],
     },
   },
   analysis: {
@@ -69,6 +80,8 @@ export const defaultConfig: AgentConfig = {
       provider: "anthropic",
       model: "claude-sonnet-4-20250514",
       maxTokens: 4096,
+      inputCostPerMillionTokens: 0,
+      outputCostPerMillionTokens: 0,
     },
   },
   budget: {
@@ -82,5 +95,9 @@ export const defaultConfig: AgentConfig = {
       stopAt: 95,
     },
   },
+  autoCompileWiki: true,
+  autoLearnWiki: false,
+  wikiSearchResultLimit: 3,
+  maxIterations: 10,
   logLevel: "info",
 };

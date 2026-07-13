@@ -35,9 +35,7 @@ coverage/
 tmp/
 temp/
 *.tmp
-
-# Docker
-.dockerignore
+.agent-state.lock
 
 # Claude Code
 .claude/
