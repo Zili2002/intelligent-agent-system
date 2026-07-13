@@ -66,7 +66,8 @@ node packages/autonomous-agent/dist/cli.js \
 ```
 
 离线模式只生成透明的通用探针，不伪装为领域结论。使用 Mission 专用 LLM
-设计时，配置 `analysis.mode` 并提供 `ANTHROPIC_API_KEY`。
+设计时，配置 `analysis.mode`，并提供 `ANTHROPIC_API_KEY`，或者同时提供
+`ANTHROPIC_AUTH_TOKEN` 与 `ANTHROPIC_BASE_URL`。
 
 Local 模式不是文件系统沙箱，因此必须显式添加 `--approve`。传给实验进程的
 环境变量经过白名单过滤，不包含 Anthropic API Key 等宿主机密钥。

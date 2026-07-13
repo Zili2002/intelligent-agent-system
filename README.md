@@ -25,8 +25,8 @@ The companion knowledge repository is
 - Node.js 20 or later
 - Git
 - Docker when using the Docker experiment sandbox
-- An Anthropic API key only when `analysis.mode` is `llm` or hybrid LLM
-  reasoning is desired
+- An Anthropic API key or auth token only when `analysis.mode` is `llm` or
+  hybrid LLM reasoning is desired
 
 Tests and the offline workflow do not require paid credentials or network
 search.

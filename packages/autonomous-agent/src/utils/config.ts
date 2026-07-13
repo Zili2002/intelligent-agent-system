@@ -40,6 +40,15 @@ export async function loadConfig(
     }
     config.sandbox.type = process.env.AGENT_SANDBOX;
   }
+  if (process.env.ANTHROPIC_MODEL && config.analysis.llm) {
+    config.analysis.llm.model = process.env.ANTHROPIC_MODEL.replace(
+      // Strip terminal formatting accidentally persisted by shell-managed settings.
+      /\u001B\[[0-?]*[ -/]*[@-~]/g,
+      "",
+    )
+      .replace(/\[[0-9;]*m$/g, "")
+      .trim();
+  }
 
   validateConfig(config);
   return config;

@@ -40,15 +40,34 @@ export interface ExperimentDesignPlan {
 const DESIGN_SYSTEM_PROMPT =
   "You design safe, reproducible research experiments. Return only valid JSON. Never invent existing measurements or claim an experiment has run.";
 
+function anthropicEnvironment(): {
+  apiKey?: string;
+  authToken?: string;
+  baseURL?: string;
+} {
+  return {
+    ...(process.env.ANTHROPIC_API_KEY
+      ? { apiKey: process.env.ANTHROPIC_API_KEY }
+      : {}),
+    ...(process.env.ANTHROPIC_AUTH_TOKEN
+      ? { authToken: process.env.ANTHROPIC_AUTH_TOKEN }
+      : {}),
+    ...(process.env.ANTHROPIC_BASE_URL
+      ? { baseURL: process.env.ANTHROPIC_BASE_URL }
+      : {}),
+  };
+}
+
 export function planExperimentDesign(
   mission: Mission,
   hypothesis: Hypothesis,
   config: AgentConfig,
 ): ExperimentDesignPlan {
   const llmConfig = config.analysis.llm;
+  const credentials = anthropicEnvironment();
   const usesAnthropic =
     config.analysis.mode !== "rule-based" &&
-    Boolean(process.env.ANTHROPIC_API_KEY) &&
+    Boolean(credentials.apiKey || credentials.authToken) &&
     llmConfig?.provider === "anthropic";
   if (!usesAnthropic || !llmConfig) {
     return {
@@ -90,16 +109,16 @@ export async function designExperimentForMission(
   config: AgentConfig,
 ): Promise<DesignOutcome> {
   const llmConfig = config.analysis.llm;
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const credentials = anthropicEnvironment();
 
   if (config.analysis.mode === "rule-based") {
     return offlineOutcome(mission, hypothesis);
   }
 
-  if (!apiKey) {
+  if (!credentials.apiKey && !credentials.authToken) {
     if (config.analysis.mode === "llm") {
       throw new Error(
-        "analysis.mode is llm but ANTHROPIC_API_KEY is not configured",
+        "analysis.mode is llm but no Anthropic API key or auth token is configured",
       );
     }
     console.warn(
@@ -121,7 +140,7 @@ export async function designExperimentForMission(
     );
   }
 
-  const client = new Anthropic({ apiKey });
+  const client = new Anthropic(credentials);
   const prompt = buildDesignPrompt(mission, hypothesis);
   const response = await client.messages.create({
     model: llmConfig.model,
@@ -209,6 +228,7 @@ Return this exact JSON shape:
 The JavaScript must:
 - use only Node.js built-ins;
 - make no network requests and start no child processes;
+- never call process.exit(), process.kill(), eval(), or dynamic Function;
 - read and write only inside the current working directory;
 - execute the actual proposed measurement or intervention;
 - write results.json with status, hypothesisSupported, measurements,

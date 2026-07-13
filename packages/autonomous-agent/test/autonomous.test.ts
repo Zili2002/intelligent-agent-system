@@ -298,8 +298,10 @@ await writeFile("environment.json", JSON.stringify(process.env), "utf8");`,
 test("paid experiment design is approval-gated before any token spend", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-llm-approval-"));
   const previousKey = process.env.ANTHROPIC_API_KEY;
+  const previousAuthToken = process.env.ANTHROPIC_AUTH_TOKEN;
   try {
-    process.env.ANTHROPIC_API_KEY = "test-key-that-must-not-be-called";
+    delete process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_AUTH_TOKEN = "test-token-that-must-not-be-called";
     const missionPath = path.join(root, "mission.md");
     await writeFile(
       missionPath,
@@ -332,6 +334,11 @@ Require approval before paid reasoning.
       delete process.env.ANTHROPIC_API_KEY;
     } else {
       process.env.ANTHROPIC_API_KEY = previousKey;
+    }
+    if (previousAuthToken === undefined) {
+      delete process.env.ANTHROPIC_AUTH_TOKEN;
+    } else {
+      process.env.ANTHROPIC_AUTH_TOKEN = previousAuthToken;
     }
     await rm(root, { recursive: true, force: true });
   }
@@ -575,6 +582,7 @@ Respect the hard budget.
 
 test("loading defaults returns independent validated configuration objects", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-config-"));
+  const previousModel = process.env.ANTHROPIC_MODEL;
   try {
     const nestedRoot = path.join(root, "created-by-init");
     await initConfig(nestedRoot);
@@ -584,7 +592,15 @@ test("loading defaults returns independent validated configuration objects", asy
     first.sandbox.type = "local";
     const second = await loadConfig(root);
     assert.equal(second.sandbox.type, "docker");
+
+    process.env.ANTHROPIC_MODEL = "\u001B[1mproxy-model\u001B[0m[1m";
+    assert.equal((await loadConfig(root)).analysis.llm?.model, "proxy-model");
   } finally {
+    if (previousModel === undefined) {
+      delete process.env.ANTHROPIC_MODEL;
+    } else {
+      process.env.ANTHROPIC_MODEL = previousModel;
+    }
     await rm(root, { recursive: true, force: true });
   }
 });

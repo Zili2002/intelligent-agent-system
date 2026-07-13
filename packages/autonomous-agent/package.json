@@ -1,6 +1,6 @@
 {
   "name": "autonomous-agent",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Mission-driven autonomous exploration system",
   "type": "module",
   "main": "./dist/cli.js",
@@ -12,6 +12,7 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test test/**/*.test.ts",
+    "test:docker": "tsx --test test/docker.integration.ts",
     "lint": "tsc --noEmit",
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "dev": "tsx src/cli.ts",

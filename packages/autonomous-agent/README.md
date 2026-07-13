@@ -78,7 +78,8 @@ autonomous-agent --root <workspace> handoff --commit
 
 - `rule-based`: deterministic offline design. It runs a reproducible local
   probe and explicitly reports when domain-specific evidence is still missing.
-- `llm`: requires `ANTHROPIC_API_KEY`; missing credentials are an error.
+- `llm`: accepts `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`, with optional
+  `ANTHROPIC_BASE_URL` and `ANTHROPIC_MODEL` overrides.
 - `hybrid`: uses Anthropic when configured and otherwise reports that it is
   using the offline designer.
 

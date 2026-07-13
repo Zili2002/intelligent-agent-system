@@ -37,6 +37,9 @@ Environment overrides:
 
 ```bash
 ANTHROPIC_API_KEY=...
+ANTHROPIC_AUTH_TOKEN=...
+ANTHROPIC_BASE_URL=http://localhost:...
+ANTHROPIC_MODEL=...
 WIKI_PATH=../my-research-wiki
 AGENT_SANDBOX=local
 ```
@@ -64,7 +67,8 @@ manual dispatch:
 2. ordered workspace build
 3. all tests
 4. type/format lint
-5. Docker image build
+5. real Docker sandbox experiment
+6. Docker image build
 
 The workflow does not publish an image.
 
