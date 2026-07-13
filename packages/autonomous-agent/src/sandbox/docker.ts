@@ -36,6 +36,7 @@ export async function executeInDocker(
   try {
     container = await docker.createContainer({
       Image: dockerConfig.image,
+      ...(containerUser() ? { User: containerUser() } : {}),
       Cmd: [
         dockerCommand(options.command),
         ...options.args.map((argument) =>
@@ -126,6 +127,17 @@ export async function executeInDocker(
       }
     }
   }
+}
+
+function containerUser(): string | undefined {
+  if (
+    process.platform !== "win32" &&
+    typeof process.getuid === "function" &&
+    typeof process.getgid === "function"
+  ) {
+    return `${process.getuid()}:${process.getgid()}`;
+  }
+  return undefined;
 }
 
 function dockerCommand(command: string): string {
