@@ -2,7 +2,14 @@
  * Mission lifecycle and persistence.
  */
 
-import { access, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import {
+  access,
+  copyFile,
+  mkdir,
+  readFile,
+  rename,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import type {
   Budget,
@@ -51,6 +58,100 @@ export async function saveMissionState(
   );
   await rename(temporaryFile, stateFile);
   return stateFile;
+}
+
+export async function loadMissionStateIfExists(
+  missionId: string,
+  root: string = process.cwd(),
+): Promise<Mission | undefined> {
+  const stateFile = path.join(
+    root,
+    MISSIONS_DIR,
+    "active",
+    `${missionId}.state.json`,
+  );
+  try {
+    const content = await readFile(stateFile, "utf8");
+    return normalizeMission(JSON.parse(content) as Partial<Mission>, stateFile);
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "ENOENT"
+    ) {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+export function assertMatchingMissionDefinition(
+  definition: Mission,
+  persisted: Mission,
+): void {
+  if (
+    definition.name !== persisted.name ||
+    definition.objective !== persisted.objective
+  ) {
+    throw new Error(
+      `Mission ID collision for ${definition.id}. Add a unique **ID** metadata field or use --reset only if replacing the existing mission is intentional.`,
+    );
+  }
+}
+
+export function resumeMissionState(
+  definition: Mission,
+  persisted: Mission,
+): Mission {
+  assertMatchingMissionDefinition(definition, persisted);
+  if (persisted.status === "completed") {
+    throw new Error(
+      `Mission ${persisted.id} is already completed. Use --reset to start it again after creating a backup.`,
+    );
+  }
+  return persisted;
+}
+
+export async function loadMissionForExecution(
+  missionReference: string,
+  root: string = process.cwd(),
+): Promise<Mission> {
+  const definition = await loadMission(missionReference, root);
+  const persisted = await loadMissionStateIfExists(definition.id, root);
+  if (!persisted) {
+    return definition;
+  }
+  return resumeMissionState(definition, persisted);
+}
+
+export async function backupMissionState(
+  missionId: string,
+  root: string = process.cwd(),
+): Promise<string | undefined> {
+  const stateFile = path.join(
+    root,
+    MISSIONS_DIR,
+    "active",
+    `${missionId}.state.json`,
+  );
+  try {
+    await access(stateFile);
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "ENOENT"
+    ) {
+      return undefined;
+    }
+    throw error;
+  }
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const backupFile = `${stateFile}.backup-${timestamp}`;
+  await copyFile(stateFile, backupFile);
+  return backupFile;
 }
 
 /**
@@ -181,10 +282,14 @@ export function updateMetric(
 export function recordExperiment(
   mission: Mission,
   experimentId: string,
+  successful: boolean,
 ): Mission {
   if (!mission.experimentIds.includes(experimentId)) {
     mission.experimentIds.push(experimentId);
     mission.iteration += 1;
+  }
+  if (successful && !mission.successfulExperimentIds.includes(experimentId)) {
+    mission.successfulExperimentIds.push(experimentId);
   }
   return mission;
 }
@@ -271,6 +376,7 @@ function normalizeMission(
     startedAt: mission.startedAt,
     completedAt: mission.completedAt,
     experimentIds: mission.experimentIds ?? [],
+    successfulExperimentIds: mission.successfulExperimentIds ?? [],
     notes: mission.notes ?? [],
     findings: mission.findings ?? [],
     knowledgeGaps: mission.knowledgeGaps ?? [],

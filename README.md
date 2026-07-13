@@ -59,7 +59,7 @@ node packages/autonomous-agent/dist/cli.js \
 # Run one deterministic cycle through the local Node sandbox
 node packages/autonomous-agent/dist/cli.js \
   --root ./agent-workspace \
-  explore <mission-id> --sandbox local --offline
+  explore <mission-id> --sandbox local --offline --approve
 ```
 
 Use `run` for bounded continuous cycles and `experiment-resume --approve` for
@@ -99,7 +99,8 @@ inventing an answer when nothing relevant is indexed.
 - Generated experiment code is statically checked before execution.
 - Docker execution restricts resources, capabilities, processes, filesystem,
   and network access.
-- Local execution is allowlisted and clearly reported as weaker isolation.
+- Local execution is allowlisted, receives a scrubbed environment, and always
+  requires explicit approval because it is not filesystem-isolated.
 - Mission budgets and iteration limits stop autonomous continuation.
 - LLM token pricing is configurable because model pricing is not assumed.
 - Active-search and reflection output records whether evidence is retrieved or

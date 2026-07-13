@@ -29,6 +29,61 @@ interface LlmExperimentDesign {
   };
 }
 
+export interface ExperimentDesignPlan {
+  usesAnthropic: boolean;
+  estimatedInputTokens: number;
+  requestedOutputTokens: number;
+  estimatedTotalTokens: number;
+  estimatedCostUsd: number;
+}
+
+const DESIGN_SYSTEM_PROMPT =
+  "You design safe, reproducible research experiments. Return only valid JSON. Never invent existing measurements or claim an experiment has run.";
+
+export function planExperimentDesign(
+  mission: Mission,
+  hypothesis: Hypothesis,
+  config: AgentConfig,
+): ExperimentDesignPlan {
+  const llmConfig = config.analysis.llm;
+  const usesAnthropic =
+    config.analysis.mode !== "rule-based" &&
+    Boolean(process.env.ANTHROPIC_API_KEY) &&
+    llmConfig?.provider === "anthropic";
+  if (!usesAnthropic || !llmConfig) {
+    return {
+      usesAnthropic: false,
+      estimatedInputTokens: 0,
+      requestedOutputTokens: 0,
+      estimatedTotalTokens: 0,
+      estimatedCostUsd: 0,
+    };
+  }
+
+  const prompt = buildDesignPrompt(mission, hypothesis);
+  const estimatedInputTokens =
+    Buffer.byteLength(`${DESIGN_SYSTEM_PROMPT}\n${prompt}`, "utf8") + 128;
+  const remainingTokens =
+    mission.budget.llmTokens > 0
+      ? mission.budget.llmTokens - mission.budget.llmTokensUsed
+      : Number.POSITIVE_INFINITY;
+  const requestedOutputTokens = Math.max(
+    0,
+    Math.min(llmConfig.maxTokens, remainingTokens - estimatedInputTokens),
+  );
+
+  return {
+    usesAnthropic: true,
+    estimatedInputTokens,
+    requestedOutputTokens,
+    estimatedTotalTokens: estimatedInputTokens + requestedOutputTokens,
+    estimatedCostUsd:
+      (estimatedInputTokens / 1_000_000) * llmConfig.inputCostPerMillionTokens +
+      (requestedOutputTokens / 1_000_000) *
+        llmConfig.outputCostPerMillionTokens,
+  };
+}
+
 export async function designExperimentForMission(
   mission: Mission,
   hypothesis: Hypothesis,
@@ -59,25 +114,24 @@ export async function designExperimentForMission(
     );
   }
 
-  const remainingTokens =
-    mission.budget.llmTokens > 0
-      ? mission.budget.llmTokens - mission.budget.llmTokensUsed
-      : llmConfig.maxTokens;
-  if (remainingTokens <= 0) {
-    throw new Error("Mission LLM token budget is exhausted");
+  const plan = planExperimentDesign(mission, hypothesis, config);
+  if (!plan.usesAnthropic || plan.requestedOutputTokens <= 0) {
+    throw new Error(
+      "Mission LLM token budget cannot cover the estimated input and output tokens",
+    );
   }
 
   const client = new Anthropic({ apiKey });
+  const prompt = buildDesignPrompt(mission, hypothesis);
   const response = await client.messages.create({
     model: llmConfig.model,
-    max_tokens: Math.max(1, Math.min(llmConfig.maxTokens, remainingTokens)),
+    max_tokens: plan.requestedOutputTokens,
     temperature: 0,
-    system:
-      "You design safe, reproducible research experiments. Return only valid JSON. Never invent existing measurements or claim an experiment has run.",
+    system: DESIGN_SYSTEM_PROMPT,
     messages: [
       {
         role: "user",
-        content: buildDesignPrompt(mission, hypothesis),
+        content: prompt,
       },
     ],
   });
@@ -96,6 +150,7 @@ export async function designExperimentForMission(
         ...design,
         codeLanguage: "javascript",
         entrypoint: "experiment.mjs",
+        origin: "anthropic",
       },
       createdAt: new Date().toISOString(),
     },
@@ -158,6 +213,7 @@ The JavaScript must:
 - execute the actual proposed measurement or intervention;
 - write results.json with status, hypothesisSupported, measurements,
   metricUpdates, findings, unexpectedFindings, knowledgeGaps, and nextSteps;
+- set runId to process.env.EXPERIMENT_RUN_ID in results.json;
 - use exact success-metric names for metricUpdates;
 - report null or inconclusive when evidence cannot support a conclusion;
 - not contain Markdown fences.`;

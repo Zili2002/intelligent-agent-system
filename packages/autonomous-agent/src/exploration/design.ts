@@ -40,6 +40,7 @@ export function designExperiment(
       code: generateOfflineExperimentCode(mission, hypothesis, isBaseline),
       codeLanguage: "javascript",
       entrypoint: "experiment.mjs",
+      origin: "rule-based",
       expectedDuration: "< 1 minute",
       resourceEstimate: {
         cpu: 1,
@@ -80,6 +81,7 @@ for (let index = 0; index < iterations; index += 1) {
 const durationMs = performance.now() - startedAt;
 const throughput = iterations / Math.max(durationMs / 1000, 0.000001);
 const result = {
+  runId: process.env.EXPERIMENT_RUN_ID,
   status: ${JSON.stringify(isBaseline ? "completed" : "inconclusive")},
   hypothesisSupported: null,
   measurements: {

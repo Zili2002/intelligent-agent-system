@@ -15,7 +15,11 @@ import { resumeExperiment, runExplorationCycle } from "./exploration/cycle.js";
 import { orientAnalysis } from "./exploration/orient.js";
 import {
   calculateProgress,
+  backupMissionState,
   loadMission,
+  loadMissionForExecution,
+  loadMissionStateIfExists,
+  resumeMissionState,
   saveMissionState,
 } from "./mission/manager.js";
 import { syncExperimentToWiki, type WikiSyncResult } from "./knowledge/wiki.js";
@@ -28,7 +32,7 @@ const program = new Command();
 program
   .name("autonomous-agent")
   .description("Mission-driven autonomous exploration system")
-  .version("0.2.0")
+  .version("0.2.1")
   .option(
     "-r, --root <path>",
     "Agent workspace containing missions/ and experiments/",
@@ -80,13 +84,22 @@ program
 
 program
   .command("mission-start")
-  .description("Start or restart a mission from Markdown")
+  .description("Start or resume a mission from Markdown")
   .argument("<file>", "Mission Markdown file")
+  .option("--reset", "Back up and reset existing state for this mission ID")
   .action(
-    command(async (file: string) => {
+    command(async (file: string, options: { reset?: boolean }) => {
       const root = rootDirectory();
       const config = await loadConfig(root);
-      const mission = await loadMission(file, root);
+      const definition = await loadMission(file, root);
+      const existing = await loadMissionStateIfExists(definition.id, root);
+      let mission = definition;
+      let backupPath: string | undefined;
+      if (existing && !options.reset) {
+        mission = resumeMissionState(definition, existing);
+      } else if (existing && options.reset) {
+        backupPath = await backupMissionState(definition.id, root);
+      }
       mission.status = "active";
       mission.startedAt ??= new Date().toISOString();
       mission.maxIterations = config.maxIterations;
@@ -98,6 +111,12 @@ program
       console.log(`State: ${statePath}`);
       console.log(`Success metrics: ${mission.successMetrics.length}`);
       console.log(`Maximum iterations: ${mission.maxIterations}`);
+      if (existing && !options.reset) {
+        console.log("Resumed existing mission state.");
+      }
+      if (backupPath) {
+        console.log(`Previous state backup: ${backupPath}`);
+      }
     }),
   );
 
@@ -347,7 +366,7 @@ async function prepareMission(
   missionReference: string,
   root: string,
 ): Promise<Mission> {
-  const mission = await loadMission(missionReference, root);
+  const mission = await loadMissionForExecution(missionReference, root);
   if (mission.status === "completed") {
     throw new Error(`Mission ${mission.id} is already completed`);
   }

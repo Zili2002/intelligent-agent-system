@@ -70,6 +70,7 @@ export interface Mission {
   completedAt?: string;
 
   experimentIds: string[];
+  successfulExperimentIds: string[];
   notes: string[];
   findings: string[];
   knowledgeGaps: string[];

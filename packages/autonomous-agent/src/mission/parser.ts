@@ -30,7 +30,7 @@ export async function parseMission(filePath: string): Promise<Mission> {
   const now = new Date().toISOString();
 
   return {
-    id: generateMissionId(name),
+    id: generateMissionId(name, metadata.id),
     name,
     objective: parseObjective(sections.objective ?? []),
     sourcePath: path.resolve(filePath),
@@ -45,6 +45,7 @@ export async function parseMission(filePath: string): Promise<Mission> {
     createdAt: now,
     updatedAt: now,
     experimentIds: [],
+    successfulExperimentIds: [],
     notes: [],
     findings: [],
     knowledgeGaps: [],
@@ -264,11 +265,14 @@ function parseNumber(value: string): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function generateMissionId(name: string): string {
-  const slug = name
+function generateMissionId(name: string, explicitId?: string): string {
+  const slug = (explicitId?.trim() || name)
     .toLowerCase()
     .normalize("NFKD")
     .replace(/[^\p{Letter}\p{Number}]+/gu, "-")
     .replace(/^-|-$/g, "");
-  return `mission-${slug || "untitled"}`;
+  if (!slug) {
+    throw new Error("Mission ID or title must contain letters or numbers");
+  }
+  return slug.startsWith("mission-") ? slug : `mission-${slug}`;
 }

@@ -35,6 +35,7 @@ export async function executeExperiment(
     env: {
       EXPERIMENT_ID: experiment.id,
       MISSION_ID: experiment.missionId,
+      EXPERIMENT_RUN_ID: experiment.execution?.runId ?? "",
     },
   };
 

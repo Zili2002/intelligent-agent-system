@@ -54,7 +54,7 @@ node packages/autonomous-agent/dist/cli.js \
 ```bash
 node packages/autonomous-agent/dist/cli.js \
   --root ./agent-workspace \
-  explore <mission-id> --sandbox local --offline
+  explore <mission-id> --sandbox local --offline --approve
 ```
 
 连续运行有限轮次：
@@ -62,11 +62,14 @@ node packages/autonomous-agent/dist/cli.js \
 ```bash
 node packages/autonomous-agent/dist/cli.js \
   --root ./agent-workspace \
-  run <mission-id> --max-cycles 3 --sandbox local --offline
+  run <mission-id> --max-cycles 3 --sandbox local --offline --approve
 ```
 
 离线模式只生成透明的通用探针，不伪装为领域结论。使用 Mission 专用 LLM
 设计时，配置 `analysis.mode` 并提供 `ANTHROPIC_API_KEY`。
+
+Local 模式不是文件系统沙箱，因此必须显式添加 `--approve`。传给实验进程的
+环境变量经过白名单过滤，不包含 Anthropic API Key 等宿主机密钥。
 
 ## 5. 查询和主动搜索
 

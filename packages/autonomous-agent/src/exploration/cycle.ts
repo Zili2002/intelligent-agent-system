@@ -3,6 +3,7 @@
  * Decide cycle with durable checkpoints.
  */
 
+import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -11,11 +12,15 @@ import {
   saveMissionState,
   updateMetric,
 } from "../mission/manager.js";
-import { designExperimentForMission } from "../reasoning/provider.js";
+import {
+  designExperimentForMission,
+  planExperimentDesign,
+} from "../reasoning/provider.js";
 import { executeExperiment } from "../sandbox/executor.js";
 import { assessExperimentSafety } from "../sandbox/safety.js";
 import {
   experimentDirectory,
+  clearExperimentOutputs,
   loadExperiment,
   loadExperimentResult,
   saveExperiment,
@@ -85,6 +90,59 @@ export async function runExplorationCycle(
     return { mission, situation, hypotheses, decision };
   }
 
+  const designPlan = planExperimentDesign(mission, topHypothesis, config);
+  if (designPlan.usesAnthropic) {
+    const projectedCostPercent =
+      mission.budget.costLimit > 0
+        ? ((mission.budget.costSpent + designPlan.estimatedCostUsd) /
+            mission.budget.costLimit) *
+          100
+        : 0;
+    if (
+      designPlan.requestedOutputTokens <= 0 ||
+      projectedCostPercent >= config.budget.alerts.stopAt
+    ) {
+      mission.status = "paused";
+      const rationale =
+        designPlan.requestedOutputTokens <= 0
+          ? "The remaining LLM token budget cannot cover the estimated request"
+          : "The estimated LLM request cost reaches the configured budget stop threshold";
+      mission.notes.push(rationale);
+      await saveMissionState(mission, root);
+      return {
+        mission,
+        situation,
+        hypotheses,
+        decision: {
+          action: "pause",
+          rationale,
+        },
+      };
+    }
+
+    const reasoningRequiresApproval =
+      mission.budget.approvalRequired ||
+      !config.budget.autoApprove.enabled ||
+      designPlan.estimatedTotalTokens >
+        config.budget.autoApprove.maxTokensPerExperiment;
+    if (reasoningRequiresApproval && !options.approve) {
+      mission.status = "paused";
+      const rationale =
+        "The paid experiment-design request requires explicit approval before contacting Anthropic";
+      mission.notes.push(rationale);
+      await saveMissionState(mission, root);
+      return {
+        mission,
+        situation,
+        hypotheses,
+        decision: {
+          action: "pause",
+          rationale,
+        },
+      };
+    }
+  }
+
   const designOutcome = await designExperimentForMission(
     mission,
     topHypothesis,
@@ -95,9 +153,6 @@ export async function runExplorationCycle(
     designOutcome.inputTokens + designOutcome.outputTokens;
   mission.budget.costSpent += designOutcome.estimatedCostUsd;
   const safety = assessExperimentSafety(experiment, mission, config);
-  const designTokens = designOutcome.inputTokens + designOutcome.outputTokens;
-  const tokenApprovalRequired =
-    designTokens > config.budget.autoApprove.maxTokensPerExperiment;
 
   if (!safety.safe) {
     experiment.status = "failed";
@@ -151,7 +206,7 @@ export async function runExplorationCycle(
     };
   }
 
-  if ((safety.requiresApproval || tokenApprovalRequired) && !options.approve) {
+  if (safety.requiresApproval && !options.approve) {
     experiment.status = "awaiting_approval";
     await saveExperiment(experiment, root);
     const approvalReasons = [
@@ -161,11 +216,6 @@ export async function runExplorationCycle(
         : []),
       ...(!config.budget.autoApprove.enabled
         ? ["Automatic experiment approval is disabled"]
-        : []),
-      ...(tokenApprovalRequired
-        ? [
-            `Design used ${designTokens} tokens, above the ${config.budget.autoApprove.maxTokensPerExperiment}-token auto-approval limit`,
-          ]
         : []),
     ];
     mission.notes.push(
@@ -232,6 +282,39 @@ export async function resumeExperiment(
 
   const situation = await orientAnalysis(mission);
   const hypotheses = [experiment.hypothesis];
+  if (isBudgetExhausted(mission, config.budget.alerts.stopAt)) {
+    mission.status = "paused";
+    const rationale = `Budget usage meets the configured ${config.budget.alerts.stopAt}% stop threshold`;
+    mission.notes.push(rationale);
+    await saveMissionState(mission, root);
+    return {
+      mission,
+      situation,
+      hypotheses,
+      experiment,
+      decision: {
+        action: "pause",
+        rationale,
+      },
+    };
+  }
+  if (mission.iteration >= mission.maxIterations) {
+    mission.status = "paused";
+    const rationale = `Mission reached its ${mission.maxIterations}-iteration limit`;
+    mission.notes.push(rationale);
+    await saveMissionState(mission, root);
+    return {
+      mission,
+      situation,
+      hypotheses,
+      experiment,
+      decision: {
+        action: "pause",
+        rationale,
+      },
+    };
+  }
+
   const safety = assessExperimentSafety(experiment, mission, config);
   if (!safety.safe) {
     throw new Error(
@@ -274,8 +357,13 @@ async function executeApprovedExperiment(
   situation: Situation,
   hypotheses: Hypothesis[],
 ): Promise<ExplorationCycleResult> {
+  const runId = randomUUID();
+  await clearExperimentOutputs(experiment.id, root);
   experiment.status = "running";
-  experiment.execution = { startedAt: new Date().toISOString() };
+  experiment.execution = {
+    runId,
+    startedAt: new Date().toISOString(),
+  };
   await saveExperiment(experiment, root);
 
   const directory = experimentDirectory(root, experiment.id);
@@ -294,6 +382,11 @@ async function executeApprovedExperiment(
   let resultDocument;
   try {
     resultDocument = await loadExperimentResult(experiment.id, root);
+    if (resultDocument.runId !== runId) {
+      throw new Error(
+        `Experiment ${experiment.id} returned a stale or mismatched runId`,
+      );
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     resultDocument = {
@@ -313,8 +406,10 @@ async function executeApprovedExperiment(
   );
   experiment.status = experiment.analysis.success ? "completed" : "failed";
   experiment.completedAt = new Date().toISOString();
-  recordExperiment(mission, experiment.id);
-  applyMetricUpdates(mission, experiment);
+  recordExperiment(mission, experiment.id, experiment.analysis.success);
+  if (experiment.analysis.success) {
+    applyMetricUpdates(mission, experiment);
+  }
 
   const reflection = reflectOnExperiment(mission, experiment);
   mergeUnique(
@@ -374,7 +469,7 @@ function applyMetricUpdates(mission: Mission, experiment: Experiment): void {
     updateMetric(
       mission,
       completedMetric.name,
-      String(mission.experimentIds.length),
+      String(mission.successfulExperimentIds.length),
     );
   }
 }

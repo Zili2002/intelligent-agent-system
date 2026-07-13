@@ -46,7 +46,7 @@ export async function executeInLocal(
 
     const child = spawn(options.command, options.args, {
       cwd: options.workDir,
-      env: { ...process.env, ...options.env },
+      env: safeEnvironment(options.env),
       windowsHide: true,
     });
 
@@ -125,4 +125,30 @@ export async function executeInLocal(
       });
     });
   });
+}
+
+function safeEnvironment(
+  experimentEnvironment: Record<string, string> | undefined,
+): NodeJS.ProcessEnv {
+  const allowedHostKeys =
+    process.platform === "win32"
+      ? ["SystemRoot", "WINDIR", "TEMP", "TMP", "PATH", "Path", "PATHEXT"]
+      : ["PATH", "TMPDIR", "LANG", "LC_ALL", "TZ"];
+  const environment: NodeJS.ProcessEnv = {
+    PYTHONIOENCODING: "utf-8",
+    PYTHONUTF8: "1",
+  };
+
+  for (const key of allowedHostKeys) {
+    const value = process.env[key];
+    if (value !== undefined) {
+      environment[key] = value;
+    }
+  }
+
+  for (const [key, value] of Object.entries(experimentEnvironment ?? {})) {
+    environment[key] = value;
+  }
+
+  return environment;
 }

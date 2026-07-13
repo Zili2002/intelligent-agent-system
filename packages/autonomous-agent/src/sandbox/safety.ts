@@ -113,6 +113,7 @@ export function assessExperimentSafety(
     parseDurationHours(experiment.design.expectedDuration) >
     config.budget.autoApprove.maxComputeHoursPerExperiment;
   const requiresApproval =
+    config.sandbox.type === "local" ||
     mission.budget.approvalRequired ||
     !config.budget.autoApprove.enabled ||
     exceedsAutoApproval;

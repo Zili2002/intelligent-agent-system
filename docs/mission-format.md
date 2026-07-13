@@ -7,6 +7,7 @@ Mission documents define what the agent should explore and how. They are markdow
 ```markdown
 # Mission: [Clear, Specific Title]
 
+**ID**: Optional stable unique identifier
 **Status**: Draft | Active | Paused | Completed  
 **Budget**: $X USD  
 **Duration**: X days/weeks  
@@ -257,6 +258,7 @@ The agent parser extracts:
 - Duration
 - Priority
 - Maximum iterations
+- Optional explicit ID
 - Objective (first paragraph after "## Objective")
 - Success criteria (list items)
 - Constraints (list items)
@@ -264,6 +266,11 @@ The agent parser extracts:
 Both `## Success Criteria` and `## Success Metrics` are accepted. List items
 may use bullets or numbered Markdown. Numeric targets support `>=`, `<=`, `>`,
 `<`, `=`, `≥`, and `≤`.
+
+When no explicit ID is supplied, the normalized title is used. Reusing a title
+with a different objective is rejected rather than overwriting prior state.
+Starting from Markdown resumes matching state; `mission-start --reset` is
+required to reset it and writes a backup first.
 
 This metadata is used to track progress and make decisions about resource allocation.
 

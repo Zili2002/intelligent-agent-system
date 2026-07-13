@@ -45,6 +45,9 @@ budget thresholds, wiki path, and maximum iterations.
 # Start and persist a Markdown mission
 autonomous-agent --root <workspace> mission-start <mission.md>
 
+# Only this command discards progress, after writing a backup
+autonomous-agent --root <workspace> mission-start <mission.md> --reset
+
 # Inspect current progress
 autonomous-agent --root <workspace> mission-status <mission-id>
 autonomous-agent --root <workspace> orient <mission-id>
@@ -87,7 +90,8 @@ mission-specific hypothesis.
 - `docker`: default isolation with resource, capability, process, filesystem,
   and network restrictions. Docker must be installed.
 - `local`: explicit process execution using an allowlist. The default allows
-  only the current Node executable.
+  only the current Node executable, filters inherited environment variables,
+  and always requires explicit approval.
 - `hybrid`: local for short configured experiments and Docker otherwise.
 
 Generated code is statically checked before execution. Child processes,
@@ -99,7 +103,7 @@ For a local offline run:
 
 ```bash
 autonomous-agent --root <workspace> explore <mission-id> \
-  --sandbox local --offline
+  --sandbox local --offline --approve
 ```
 
 ## Approval and budgets

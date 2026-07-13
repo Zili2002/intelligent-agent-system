@@ -2,7 +2,7 @@
  * Durable experiment storage.
  */
 
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type {
   Experiment,
@@ -95,6 +95,18 @@ export async function loadExperimentResult(
   }
 
   return parsed as unknown as ExperimentResultDocument;
+}
+
+export async function clearExperimentOutputs(
+  experimentId: string,
+  root: string = process.cwd(),
+): Promise<void> {
+  const directory = experimentDirectory(root, experimentId);
+  await Promise.all(
+    ["results.json", "reflection.json"].map((name) =>
+      rm(path.join(directory, name), { force: true }),
+    ),
+  );
 }
 
 function defaultEntrypoint(

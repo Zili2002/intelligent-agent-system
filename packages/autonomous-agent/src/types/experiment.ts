@@ -38,6 +38,7 @@ export interface Experiment {
     code?: string;
     codeLanguage?: "javascript" | "typescript" | "python" | "bash";
     entrypoint?: string;
+    origin?: "rule-based" | "anthropic" | "manual";
     expectedDuration: string;
     resourceEstimate: {
       cpu: number;
@@ -47,6 +48,7 @@ export interface Experiment {
   };
 
   execution?: {
+    runId?: string;
     startedAt: string;
     completedAt?: string;
     exitCode?: number;
@@ -84,6 +86,7 @@ export interface ExperimentResult {
 }
 
 export interface ExperimentResultDocument {
+  runId?: string;
   status: "completed" | "failed" | "inconclusive";
   hypothesisSupported?: boolean | null;
   measurements?: Record<string, unknown>;
