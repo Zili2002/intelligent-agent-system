@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { createServer } from "node:http";
 import test from "node:test";
 import {
   initWiki,
@@ -26,6 +27,11 @@ import {
 } from "../src/mission/manager.js";
 import { executeInLocal } from "../src/sandbox/local.js";
 import { assessExperimentSafety } from "../src/sandbox/safety.js";
+import {
+  approveRequest,
+  getApprovalRequestForMission,
+  listApprovalRequests,
+} from "../src/runtime/approvals.js";
 import { defaultConfig } from "../src/types/config.js";
 import type { Experiment } from "../src/types/experiment.js";
 import { initConfig, loadConfig } from "../src/utils/config.js";
@@ -374,6 +380,7 @@ Reject a paid request that cannot fit the total token budget.
       root,
       approve: true,
     });
+
     assert.equal(result.decision.action, "pause");
     assert.equal(result.experiment, undefined);
     assert.match(result.decision.rationale, /token budget/i);
@@ -383,6 +390,97 @@ Reject a paid request that cannot fit the total token budget.
       delete process.env.ANTHROPIC_API_KEY;
     } else {
       process.env.ANTHROPIC_API_KEY = previousKey;
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("truncated paid responses record usage and consume one-time approval", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-llm-truncated-"));
+  const previousToken = process.env.ANTHROPIC_AUTH_TOKEN;
+  const previousBaseUrl = process.env.ANTHROPIC_BASE_URL;
+  const previousModel = process.env.ANTHROPIC_MODEL;
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(
+      JSON.stringify({
+        id: "msg_test",
+        type: "message",
+        role: "assistant",
+        model: "test-model",
+        content: [{ type: "text", text: '{"description":"truncated' }],
+        stop_reason: "max_tokens",
+        stop_sequence: null,
+        usage: { input_tokens: 123, output_tokens: 456 },
+      }),
+    );
+  });
+  try {
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Test server did not expose a TCP port");
+    }
+    process.env.ANTHROPIC_AUTH_TOKEN = "test-auth-token";
+    process.env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${address.port}`;
+    process.env.ANTHROPIC_MODEL = "test-model";
+    const missionPath = path.join(root, "mission.md");
+    await writeFile(
+      missionPath,
+      `# Mission: Truncated Response
+
+## Objective
+Record usage when a paid response is truncated.
+
+## Success Metrics
+- Experiments completed: >= 1
+
+## Budget
+- LLM Tokens: 10K
+- Approval Required: Yes
+`,
+      "utf8",
+    );
+    const mission = await loadMission(missionPath, root);
+    mission.status = "active";
+    const config = structuredClone(defaultConfig);
+    config.analysis.mode = "llm";
+    config.analysis.llm!.model = "test-model";
+    config.analysis.llm!.maxTokens = 500;
+
+    await runExplorationCycle(mission, config, { root });
+    const request = (await listApprovalRequests(root, mission.id))[0]!;
+    await approveRequest(root, request.id, "reviewer", mission.id);
+
+    await assert.rejects(
+      () => runExplorationCycle(mission, config, { root }),
+      /truncated/,
+    );
+    assert.equal(mission.budget.llmTokensUsed, 579);
+    assert.equal(
+      (await getApprovalRequestForMission(root, mission.id))?.status,
+      "consumed",
+    );
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+    if (previousToken === undefined) {
+      delete process.env.ANTHROPIC_AUTH_TOKEN;
+    } else {
+      process.env.ANTHROPIC_AUTH_TOKEN = previousToken;
+    }
+    if (previousBaseUrl === undefined) {
+      delete process.env.ANTHROPIC_BASE_URL;
+    } else {
+      process.env.ANTHROPIC_BASE_URL = previousBaseUrl;
+    }
+    if (previousModel === undefined) {
+      delete process.env.ANTHROPIC_MODEL;
+    } else {
+      process.env.ANTHROPIC_MODEL = previousModel;
     }
     await rm(root, { recursive: true, force: true });
   }

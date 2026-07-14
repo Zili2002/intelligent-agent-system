@@ -15,6 +15,7 @@ import {
 import {
   designExperimentForMission,
   planExperimentDesign,
+  ReasoningResponseError,
 } from "../reasoning/provider.js";
 import {
   consumeApprovalRequest,
@@ -182,11 +183,25 @@ export async function runExplorationCycle(
     }
   }
 
-  const designOutcome = await designExperimentForMission(
-    mission,
-    topHypothesis,
-    config,
-  );
+  let designOutcome;
+  try {
+    designOutcome = await designExperimentForMission(
+      mission,
+      topHypothesis,
+      config,
+    );
+  } catch (error) {
+    if (error instanceof ReasoningResponseError) {
+      mission.budget.llmTokensUsed += error.inputTokens + error.outputTokens;
+      mission.budget.costSpent += error.estimatedCostUsd;
+      mission.notes.push(error.message);
+      if (designPlan.usesAnthropic && !options.approve) {
+        await consumeApprovalRequest(root, mission.id);
+      }
+      await saveMissionState(mission, root);
+    }
+    throw error;
+  }
   if (designPlan.usesAnthropic && !options.approve) {
     await consumeApprovalRequest(root, mission.id);
   }

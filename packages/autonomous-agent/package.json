@@ -1,6 +1,6 @@
 {
   "name": "autonomous-agent",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Mission-driven autonomous exploration system",
   "type": "module",
   "main": "./dist/cli.js",

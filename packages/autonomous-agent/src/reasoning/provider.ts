@@ -17,6 +17,30 @@ export interface DesignOutcome {
   provider: "rule-based" | "anthropic";
 }
 
+export class ReasoningResponseError extends Error {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly estimatedCostUsd: number;
+  readonly stopReason?: string;
+
+  constructor(
+    message: string,
+    usage: {
+      inputTokens: number;
+      outputTokens: number;
+      estimatedCostUsd: number;
+      stopReason?: string;
+    },
+  ) {
+    super(message);
+    this.name = "ReasoningResponseError";
+    this.inputTokens = usage.inputTokens;
+    this.outputTokens = usage.outputTokens;
+    this.estimatedCostUsd = usage.estimatedCostUsd;
+    this.stopReason = usage.stopReason;
+  }
+}
+
 interface LlmExperimentDesign {
   description: string;
   steps: string[];
@@ -157,7 +181,28 @@ export async function designExperimentForMission(
   const text = response.content
     .flatMap((block) => (block.type === "text" ? [block.text] : []))
     .join("\n");
-  const design = parseDesign(text);
+  const estimatedCostUsd =
+    (response.usage.input_tokens / 1_000_000) *
+      llmConfig.inputCostPerMillionTokens +
+    (response.usage.output_tokens / 1_000_000) *
+      llmConfig.outputCostPerMillionTokens;
+  let design: LlmExperimentDesign;
+  try {
+    design = parseDesign(text);
+  } catch (error) {
+    const reason =
+      response.stop_reason === "max_tokens"
+        ? "Anthropic experiment design was truncated at the output token limit"
+        : `Anthropic experiment design was not valid JSON: ${
+            error instanceof Error ? error.message : String(error)
+          }`;
+    throw new ReasoningResponseError(reason, {
+      inputTokens: response.usage.input_tokens,
+      outputTokens: response.usage.output_tokens,
+      estimatedCostUsd,
+      ...(response.stop_reason ? { stopReason: response.stop_reason } : {}),
+    });
+  }
 
   return {
     experiment: {
@@ -175,11 +220,7 @@ export async function designExperimentForMission(
     },
     inputTokens: response.usage.input_tokens,
     outputTokens: response.usage.output_tokens,
-    estimatedCostUsd:
-      (response.usage.input_tokens / 1_000_000) *
-        llmConfig.inputCostPerMillionTokens +
-      (response.usage.output_tokens / 1_000_000) *
-        llmConfig.outputCostPerMillionTokens,
+    estimatedCostUsd,
     provider: "anthropic",
   };
 }
