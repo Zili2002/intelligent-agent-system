@@ -116,11 +116,16 @@ export function resumeMissionState(
 export async function loadMissionForExecution(
   missionReference: string,
   root: string = process.cwd(),
+  options: { allowCompleted?: boolean } = {},
 ): Promise<Mission> {
   const definition = await loadMission(missionReference, root);
   const persisted = await loadMissionStateIfExists(definition.id, root);
   if (!persisted) {
     return definition;
+  }
+  if (options.allowCompleted && persisted.status === "completed") {
+    assertMatchingMissionDefinition(definition, persisted);
+    return persisted;
   }
   return resumeMissionState(definition, persisted);
 }

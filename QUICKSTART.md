@@ -65,6 +65,21 @@ node packages/autonomous-agent/dist/cli.js \
   run <mission-id> --max-cycles 3 --sandbox local --offline --approve
 ```
 
+持续调度并记录运行历史：
+
+```bash
+node packages/autonomous-agent/dist/cli.js \
+  --root ./agent-workspace \
+  daemon <mission-id> --offline --sandbox docker \
+  --interval 300 --max-duration 86400
+
+node packages/autonomous-agent/dist/cli.js --root ./agent-workspace runs
+node packages/autonomous-agent/dist/cli.js --root ./agent-workspace health
+```
+
+如果 daemon 返回 `waiting_approval`，使用 `approvals` 查看请求，再执行
+`approval-approve` 或 `approval-reject`。
+
 离线模式只生成透明的通用探针，不伪装为领域结论。使用 Mission 专用 LLM
 设计时，配置 `analysis.mode`，并提供 `ANTHROPIC_API_KEY`，或者同时提供
 `ANTHROPIC_AUTH_TOKEN` 与 `ANTHROPIC_BASE_URL`。

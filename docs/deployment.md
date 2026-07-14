@@ -96,8 +96,28 @@ from state/options or the current Git branch.
 
 ```bash
 autonomous-agent --root <workspace> mission-status <mission-id>
+autonomous-agent --root <workspace> health --docker
+autonomous-agent --root <workspace> runs
+autonomous-agent --root <workspace> history
+autonomous-agent --root <workspace> approvals
 llmwiki --root <wiki-repository> status
 llmwiki --root <wiki-repository> lint
 ```
 
 Review diffs before any commit or push.
+
+## Continuous scheduler
+
+```bash
+autonomous-agent --root <workspace> daemon <mission-id> \
+  --interval 300 \
+  --max-duration 86400 \
+  --max-cycles 100 \
+  --retry-attempts 3 \
+  --retry-delay 5
+```
+
+Only one process may run a Mission at a time. Stale locks are recovered when
+their owning process is gone. Transient network/runtime failures use bounded
+exponential retry; policy, budget, safety, and configuration failures are not
+retried.

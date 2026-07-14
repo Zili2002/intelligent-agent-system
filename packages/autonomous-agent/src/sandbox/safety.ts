@@ -103,7 +103,12 @@ export function assessExperimentSafety(
     }
   }
 
-  if (config.sandbox.type === "local") {
+  const usesLocalSandbox =
+    config.sandbox.type === "local" ||
+    (config.sandbox.type === "hybrid" &&
+      experiment.design.expectedDuration === "< 1 minute" &&
+      config.sandbox.local !== undefined);
+  if (usesLocalSandbox) {
     warnings.push(
       "Local execution is process-limited but not equivalent to container isolation",
     );
@@ -113,7 +118,7 @@ export function assessExperimentSafety(
     parseDurationHours(experiment.design.expectedDuration) >
     config.budget.autoApprove.maxComputeHoursPerExperiment;
   const requiresApproval =
-    config.sandbox.type === "local" ||
+    usesLocalSandbox ||
     mission.budget.approvalRequired ||
     !config.budget.autoApprove.enabled ||
     exceedsAutoApproval;

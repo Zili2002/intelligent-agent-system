@@ -23,6 +23,18 @@ import {
   saveMissionState,
 } from "./mission/manager.js";
 import { syncExperimentToWiki, type WikiSyncResult } from "./knowledge/wiki.js";
+import {
+  approveExperiment,
+  approveRequest,
+  listApprovalRequests,
+  listPendingApprovals,
+  rejectExperiment,
+  rejectRequest,
+} from "./runtime/approvals.js";
+import { checkAgentHealth } from "./runtime/health.js";
+import { acquireMissionLock } from "./runtime/lock.js";
+import { runContinuousMission } from "./runtime/scheduler.js";
+import { listRunRecords, readRunHistory } from "./runtime/store.js";
 import type { AgentConfig } from "./types/config.js";
 import type { Mission } from "./types/mission.js";
 import { initConfig, loadConfig } from "./utils/config.js";
@@ -32,7 +44,7 @@ const program = new Command();
 program
   .name("autonomous-agent")
   .description("Mission-driven autonomous exploration system")
-  .version("0.2.2")
+  .version("0.3.0")
   .option(
     "-r, --root <path>",
     "Agent workspace containing missions/ and experiments/",
@@ -92,30 +104,35 @@ program
       const root = rootDirectory();
       const config = await loadConfig(root);
       const definition = await loadMission(file, root);
-      const existing = await loadMissionStateIfExists(definition.id, root);
-      let mission = definition;
-      let backupPath: string | undefined;
-      if (existing && !options.reset) {
-        mission = resumeMissionState(definition, existing);
-      } else if (existing && options.reset) {
-        backupPath = await backupMissionState(definition.id, root);
-      }
-      mission.status = "active";
-      mission.startedAt ??= new Date().toISOString();
-      mission.maxIterations = config.maxIterations;
-      const statePath = await saveMissionState(mission, root);
-      await checkpointMission(mission, config, root);
+      const lock = await acquireMissionLock(root, definition.id);
+      try {
+        const existing = await loadMissionStateIfExists(definition.id, root);
+        let mission = definition;
+        let backupPath: string | undefined;
+        if (existing && !options.reset) {
+          mission = resumeMissionState(definition, existing);
+        } else if (existing && options.reset) {
+          backupPath = await backupMissionState(definition.id, root);
+        }
+        mission.status = "active";
+        mission.startedAt ??= new Date().toISOString();
+        mission.maxIterations = config.maxIterations;
+        const statePath = await saveMissionState(mission, root);
+        await checkpointMission(mission, config, root);
 
-      console.log(`Mission started: ${mission.name}`);
-      console.log(`ID: ${mission.id}`);
-      console.log(`State: ${statePath}`);
-      console.log(`Success metrics: ${mission.successMetrics.length}`);
-      console.log(`Maximum iterations: ${mission.maxIterations}`);
-      if (existing && !options.reset) {
-        console.log("Resumed existing mission state.");
-      }
-      if (backupPath) {
-        console.log(`Previous state backup: ${backupPath}`);
+        console.log(`Mission started: ${mission.name}`);
+        console.log(`ID: ${mission.id}`);
+        console.log(`State: ${statePath}`);
+        console.log(`Success metrics: ${mission.successMetrics.length}`);
+        console.log(`Maximum iterations: ${mission.maxIterations}`);
+        if (existing && !options.reset) {
+          console.log("Resumed existing mission state.");
+        }
+        if (backupPath) {
+          console.log(`Previous state backup: ${backupPath}`);
+        }
+      } finally {
+        await lock.release();
       }
     }),
   );
@@ -175,17 +192,24 @@ program
         },
       ) => {
         const root = rootDirectory();
-        const mission = await prepareMission(missionReference, root);
         const config = await configuredAgent(root, options);
-        const result = await runExplorationCycle(mission, config, {
-          root,
-          execute: options.execute,
-          approve: options.approve,
-        });
-        const wiki = await syncCycleKnowledge(mission, config, root, result);
-        await checkpointMission(mission, config, root, result, wiki);
-        printCycleResult(result);
-        printWikiResult(wiki);
+        const preview = await loadMissionForExecution(missionReference, root);
+        const lock = await acquireMissionLock(root, preview.id);
+        try {
+          const mission = await prepareMission(missionReference, root);
+          await saveMissionState(mission, root);
+          const result = await runExplorationCycle(mission, config, {
+            root,
+            execute: options.execute,
+            approve: options.approve,
+          });
+          const wiki = await syncCycleKnowledge(mission, config, root, result);
+          await checkpointMission(mission, config, root, result, wiki);
+          printCycleResult(result);
+          printWikiResult(wiki);
+        } finally {
+          await lock.release();
+        }
       },
     ),
   );
@@ -223,34 +247,45 @@ program
         },
       ) => {
         const root = rootDirectory();
-        const mission = await prepareMission(missionReference, root);
         const config = await configuredAgent(root, options);
-        const maxCycles = Math.min(
-          options.maxCycles ?? config.maxIterations,
-          mission.maxIterations,
-        );
+        const preview = await loadMissionForExecution(missionReference, root);
+        const lock = await acquireMissionLock(root, preview.id);
 
-        for (let cycle = 1; cycle <= maxCycles; cycle += 1) {
-          console.log(`\nCycle ${cycle}/${maxCycles}`);
-          const result = await runExplorationCycle(mission, config, {
-            root,
-            execute: true,
-            approve: options.approve,
-          });
-          const wiki = await syncCycleKnowledge(mission, config, root, result);
-          await checkpointMission(mission, config, root, result, wiki);
-          printCycleResult(result);
-          printWikiResult(wiki);
+        try {
+          const mission = await prepareMission(missionReference, root);
+          const maxCycles = Math.min(
+            options.maxCycles ?? config.maxIterations,
+            mission.maxIterations,
+          );
+          await saveMissionState(mission, root);
+          for (let cycle = 1; cycle <= maxCycles; cycle += 1) {
+            console.log(`\nCycle ${cycle}/${maxCycles}`);
+            const result = await runExplorationCycle(mission, config, {
+              root,
+              execute: true,
+              approve: options.approve,
+            });
+            const wiki = await syncCycleKnowledge(
+              mission,
+              config,
+              root,
+              result,
+            );
+            await checkpointMission(mission, config, root, result, wiki);
+            printCycleResult(result);
+            printWikiResult(wiki);
 
-          if (
-            result.decision.action !== "continue" &&
-            result.decision.action !== "pivot"
-          ) {
-            break;
+            if (
+              result.decision.action !== "continue" &&
+              result.decision.action !== "pivot"
+            ) {
+              break;
+            }
           }
+          printMissionStatus(mission);
+        } finally {
+          await lock.release();
         }
-
-        printMissionStatus(mission);
       },
     ),
   );
@@ -282,16 +317,256 @@ program
         },
       ) => {
         const root = rootDirectory();
-        const mission = await prepareMission(missionReference, root);
         const config = await configuredAgent(root, options);
-        const result = await resumeExperiment(mission, experimentId, config, {
-          root,
-          approve: options.approve,
-        });
-        const wiki = await syncCycleKnowledge(mission, config, root, result);
-        await checkpointMission(mission, config, root, result, wiki);
-        printCycleResult(result);
-        printWikiResult(wiki);
+        const preview = await loadMissionForExecution(missionReference, root);
+        const lock = await acquireMissionLock(root, preview.id);
+        try {
+          const mission = await prepareMission(missionReference, root);
+          await saveMissionState(mission, root);
+          const result = await resumeExperiment(mission, experimentId, config, {
+            root,
+            approve: options.approve,
+          });
+          const wiki = await syncCycleKnowledge(mission, config, root, result);
+          await checkpointMission(mission, config, root, result, wiki);
+          printCycleResult(result);
+          printWikiResult(wiki);
+        } finally {
+          await lock.release();
+        }
+      },
+    ),
+  );
+
+program
+  .command("daemon")
+  .description("Run a mission continuously with locking, retry, and history")
+  .argument("<mission>", "Mission ID, state file, Markdown file, or path")
+  .option("--interval <seconds>", "Delay between cycles", parseNonNegative, 60)
+  .option(
+    "--max-duration <seconds>",
+    "Maximum daemon duration",
+    parsePositiveInteger,
+    3600,
+  )
+  .option(
+    "--max-cycles <count>",
+    "Maximum cycles for this daemon invocation",
+    parsePositiveInteger,
+    1000,
+  )
+  .option(
+    "--retry-attempts <count>",
+    "Maximum attempts for transient failures",
+    parsePositiveInteger,
+    3,
+  )
+  .option("--retry-delay <seconds>", "Initial retry delay", parseNonNegative, 5)
+  .option(
+    "--sandbox <type>",
+    "Override sandbox type: docker, local, or hybrid",
+    parseSandboxType,
+  )
+  .option("--offline", "Force deterministic rule-based experiment design")
+  .option("--learn", "Allow active Wiki gap search and evidence import")
+  .action(
+    command(
+      async (
+        missionReference: string,
+        options: {
+          interval: number;
+          maxDuration: number;
+          maxCycles: number;
+          retryAttempts: number;
+          retryDelay: number;
+          sandbox?: "docker" | "local" | "hybrid";
+          offline?: boolean;
+          learn?: boolean;
+        },
+      ) => {
+        const root = rootDirectory();
+        const config = await configuredAgent(root, options);
+        const controller = new AbortController();
+        const stop = () => controller.abort();
+        process.once("SIGINT", stop);
+        process.once("SIGTERM", stop);
+        try {
+          const run = await runContinuousMission(missionReference, config, {
+            root,
+            intervalMs: options.interval * 1000,
+            maxDurationMs: options.maxDuration * 1000,
+            maxCycles: options.maxCycles,
+            retry: {
+              maxAttempts: options.retryAttempts,
+              initialDelayMs: options.retryDelay * 1000,
+              maxDelayMs: Math.max(options.retryDelay * 1000, 60_000),
+            },
+            signal: controller.signal,
+            onCycle: async (mission, result) => {
+              const wiki = await syncCycleKnowledge(
+                mission,
+                config,
+                root,
+                result,
+              );
+              await checkpointMission(mission, config, root, result, wiki);
+              printCycleResult(result);
+              printWikiResult(wiki);
+            },
+          });
+          outputJson(run);
+        } finally {
+          process.off("SIGINT", stop);
+          process.off("SIGTERM", stop);
+        }
+      },
+    ),
+  );
+
+program
+  .command("runs")
+  .description("List recent structured run records")
+  .option("--limit <count>", "Maximum records", parsePositiveInteger, 20)
+  .action(
+    command(async (options: { limit: number }) => {
+      outputJson(await listRunRecords(rootDirectory(), options.limit));
+    }),
+  );
+
+program
+  .command("history")
+  .description("Show recent structured run and approval events")
+  .option("--limit <count>", "Maximum events", parsePositiveInteger, 50)
+  .action(
+    command(async (options: { limit: number }) => {
+      outputJson(await readRunHistory(rootDirectory(), options.limit));
+    }),
+  );
+
+program
+  .command("health")
+  .description("Check configuration, Wiki, credentials, and optional Docker")
+  .option("--docker", "Ping the Docker daemon")
+  .action(
+    command(async (options: { docker?: boolean }) => {
+      const report = await checkAgentHealth(rootDirectory(), {
+        docker: options.docker,
+      });
+      outputJson(report);
+      if (report.status === "unhealthy") process.exitCode = 1;
+    }),
+  );
+
+program
+  .command("approvals")
+  .description("List experiments waiting for approval")
+  .argument("[mission-id]", "Optional Mission ID filter")
+  .action(
+    command(async (missionId?: string) => {
+      const root = rootDirectory();
+      const [experiments, requests] = await Promise.all([
+        listPendingApprovals(root, missionId),
+        listApprovalRequests(root, missionId),
+      ]);
+      outputJson([
+        ...requests.map((request) => ({
+          id: request.id,
+          type: request.type,
+          missionId: request.missionId,
+          description: request.summary,
+          createdAt: request.createdAt,
+        })),
+        ...experiments.map((experiment) => ({
+          id: experiment.id,
+          type: "experiment",
+          missionId: experiment.missionId,
+          description: experiment.design.description,
+          origin: experiment.design.origin ?? "manual",
+          createdAt: experiment.createdAt,
+        })),
+      ]);
+    }),
+  );
+
+program
+  .command("approval-approve")
+  .description("Approve a pending experiment for later recovery/execution")
+  .argument("<mission>", "Mission ID, state file, Markdown file, or path")
+  .argument("<experiment-id>", "Pending experiment ID")
+  .option("--actor <name>", "Approval actor")
+  .action(
+    command(
+      async (
+        missionReference: string,
+        experimentId: string,
+        options: { actor?: string },
+      ) => {
+        const root = rootDirectory();
+        const config = await loadConfig(root);
+        const mission = await loadMissionForExecution(missionReference, root);
+        const lock = await acquireMissionLock(root, mission.id);
+        try {
+          outputJson(
+            experimentId.startsWith("approval-")
+              ? await approveRequest(
+                  root,
+                  experimentId,
+                  options.actor,
+                  mission.id,
+                )
+              : await approveExperiment(
+                  root,
+                  missionReference,
+                  experimentId,
+                  config,
+                  options.actor,
+                ),
+          );
+        } finally {
+          await lock.release();
+        }
+      },
+    ),
+  );
+
+program
+  .command("approval-reject")
+  .description("Reject and cancel a pending experiment")
+  .argument("<mission>", "Mission ID, state file, Markdown file, or path")
+  .argument("<experiment-id>", "Pending experiment ID")
+  .requiredOption("--reason <text>", "Rejection reason")
+  .option("--actor <name>", "Approval actor")
+  .action(
+    command(
+      async (
+        missionReference: string,
+        experimentId: string,
+        options: { reason: string; actor?: string },
+      ) => {
+        const root = rootDirectory();
+        const mission = await loadMissionForExecution(missionReference, root);
+        const lock = await acquireMissionLock(root, mission.id);
+        try {
+          outputJson(
+            experimentId.startsWith("approval-")
+              ? await rejectRequest(
+                  root,
+                  experimentId,
+                  options.reason,
+                  options.actor,
+                  mission.id,
+                )
+              : await rejectExperiment(
+                  root,
+                  missionReference,
+                  experimentId,
+                  options.reason,
+                  options.actor,
+                ),
+          );
+        } finally {
+          await lock.release();
+        }
       },
     ),
   );
@@ -362,6 +637,10 @@ function rootDirectory(): string {
   return path.resolve(program.opts<{ root: string }>().root);
 }
 
+function outputJson(value: unknown): void {
+  console.log(JSON.stringify(value, null, 2));
+}
+
 async function prepareMission(
   missionReference: string,
   root: string,
@@ -372,7 +651,6 @@ async function prepareMission(
   }
   mission.status = "active";
   mission.startedAt ??= new Date().toISOString();
-  await saveMissionState(mission, root);
   return mission;
 }
 
@@ -561,6 +839,17 @@ function parsePositiveInteger(value: string): number {
   const parsed = Number.parseInt(value, 10);
   if (!Number.isInteger(parsed) || parsed <= 0) {
     throw new InvalidArgumentError("Expected a positive integer");
+  }
+  return parsed;
+}
+
+function parseNonNegative(value: string): number {
+  if (!/^\d+(?:\.\d+)?$/.test(value)) {
+    throw new InvalidArgumentError("Expected a non-negative number");
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new InvalidArgumentError("Expected a non-negative number");
   }
   return parsed;
 }

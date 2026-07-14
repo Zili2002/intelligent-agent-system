@@ -16,6 +16,12 @@ import {
   designExperimentForMission,
   planExperimentDesign,
 } from "../reasoning/provider.js";
+import {
+  consumeApprovalRequest,
+  ensureApprovalRequest,
+  getApprovalRequestForMission,
+  isApprovalRequestApproved,
+} from "../runtime/approvals.js";
 import { executeExperiment } from "../sandbox/executor.js";
 import { assessExperimentSafety } from "../sandbox/safety.js";
 import {
@@ -125,10 +131,43 @@ export async function runExplorationCycle(
       !config.budget.autoApprove.enabled ||
       designPlan.estimatedTotalTokens >
         config.budget.autoApprove.maxTokensPerExperiment;
-    if (reasoningRequiresApproval && !options.approve) {
-      mission.status = "paused";
-      const rationale =
-        "The paid experiment-design request requires explicit approval before contacting Anthropic";
+    const persistedApproval =
+      reasoningRequiresApproval &&
+      (await isApprovalRequestApproved(root, mission.id));
+    if (reasoningRequiresApproval && !options.approve && !persistedApproval) {
+      const existingRequest = await getApprovalRequestForMission(
+        root,
+        mission.id,
+      );
+      if (existingRequest?.status === "rejected") {
+        mission.status = "paused";
+        const rationale = `The paid experiment-design request was rejected: ${
+          existingRequest.reason ?? "no reason recorded"
+        }`;
+        mission.notes.push(rationale);
+        await saveMissionState(mission, root);
+        return {
+          mission,
+          situation,
+          hypotheses,
+          decision: {
+            action: "pause",
+            rationale,
+          },
+        };
+      }
+      const request = await ensureApprovalRequest(
+        root,
+        mission.id,
+        "Approve one paid Anthropic experiment-design request",
+        {
+          estimatedInputTokens: designPlan.estimatedInputTokens,
+          requestedOutputTokens: designPlan.requestedOutputTokens,
+          estimatedCostUsd: designPlan.estimatedCostUsd,
+        },
+      );
+      mission.status = "active";
+      const rationale = `The paid experiment-design request requires approval: ${request.id}`;
       mission.notes.push(rationale);
       await saveMissionState(mission, root);
       return {
@@ -148,6 +187,9 @@ export async function runExplorationCycle(
     topHypothesis,
     config,
   );
+  if (designPlan.usesAnthropic && !options.approve) {
+    await consumeApprovalRequest(root, mission.id);
+  }
   const experiment = designOutcome.experiment;
   mission.budget.llmTokensUsed +=
     designOutcome.inputTokens + designOutcome.outputTokens;

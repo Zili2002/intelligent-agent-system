@@ -21,6 +21,8 @@ autonomous-agent
   ├─ safety and approval gate
   ├─ Docker/local execution
   ├─ analyze / reflect / decide
+  ├─ mission lock / retry / recovery / scheduler
+  ├─ run history / health / approval queue
   └─ wiki evidence bridge
 
 llm-wiki-compiler
@@ -92,6 +94,10 @@ the generated marker.
 
 Writes use temporary files and atomic rename. `.agent-state.json` also uses a
 local lock to prevent same-machine write races.
+
+Continuous daemon runs additionally use a per-Mission lock under `runs/locks/`.
+Structured run records and JSONL events under `runs/` support recovery,
+history inspection, and operational health checks.
 
 ## Safety model
 

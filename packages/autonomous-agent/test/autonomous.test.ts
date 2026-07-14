@@ -326,7 +326,7 @@ Require approval before paid reasoning.
     const result = await runExplorationCycle(mission, config, { root });
     assert.equal(result.decision.action, "pause");
     assert.equal(result.experiment, undefined);
-    assert.match(result.decision.rationale, /requires explicit approval/i);
+    assert.match(result.decision.rationale, /requires approval/i);
     assert.equal(mission.budget.llmTokensUsed, 0);
     assert.equal(mission.budget.costSpent, 0);
   } finally {

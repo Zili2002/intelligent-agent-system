@@ -58,6 +58,20 @@ autonomous-agent --root <workspace> explore <mission-id>
 # Run bounded cycles until complete or paused
 autonomous-agent --root <workspace> run <mission-id> --max-cycles 3
 
+# Run a lock-protected continuous scheduler
+autonomous-agent --root <workspace> daemon <mission-id> \
+  --interval 300 --max-duration 86400 --max-cycles 100
+
+# Inspect operations and approvals
+autonomous-agent --root <workspace> runs
+autonomous-agent --root <workspace> history
+autonomous-agent --root <workspace> health --docker
+autonomous-agent --root <workspace> approvals
+autonomous-agent --root <workspace> approval-approve \
+  <mission-id> <approval-or-experiment-id>
+autonomous-agent --root <workspace> approval-reject \
+  <mission-id> <approval-or-experiment-id> --reason "reason"
+
 # Explicitly allow Wiki gap search/import for this invocation
 autonomous-agent --root <workspace> explore <mission-id> --learn
 
@@ -117,6 +131,16 @@ success metrics, budget thresholds, or iteration limits require it.
 Model-specific input/output pricing is configurable; the agent does not assume
 pricing for an arbitrary model. Active Wiki search is disabled by default
 because it performs external network requests.
+
+## Continuous operation
+
+`daemon` acquires an exclusive cross-process Mission lock, recovers approved or
+interrupted experiments, retries transient failures with bounded exponential
+backoff, and records each run under `runs/`.
+
+Paid LLM requests and local experiments can enter the approval queue. Approval
+and rejection decisions are persisted as structured history events. A daemon
+exits with `waiting_approval` instead of bypassing policy.
 
 ## Tests
 

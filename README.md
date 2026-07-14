@@ -10,7 +10,8 @@ knowledge in a separate Markdown wiki.
 
 - `packages/autonomous-agent` — mission parsing, hypothesis generation,
   experiment design, sandbox execution, analysis, reflection, decisions,
-  budgets, approvals, and durable CLI state.
+  budgets, approval queues, continuous scheduling, retries, health checks,
+  run history, and durable CLI state.
 - `packages/llm-wiki-compiler` — source ingestion, provenance and
   deduplication, deterministic compilation, cited query, lint, reflection, and
   active search/learning.
@@ -64,6 +65,18 @@ node packages/autonomous-agent/dist/cli.js \
 
 Use `run` for bounded continuous cycles and `experiment-resume --approve` for
 review-gated or interrupted experiments.
+
+For unattended bounded scheduling:
+
+```bash
+node packages/autonomous-agent/dist/cli.js \
+  --root ./agent-workspace \
+  daemon <mission-id> --offline --sandbox docker \
+  --interval 300 --max-duration 86400
+```
+
+Use `approvals`, `approval-approve`, `approval-reject`, `runs`, `history`, and
+`health` to operate and inspect the daemon.
 
 ## Knowledge workflow
 

@@ -36,6 +36,8 @@ tmp/
 temp/
 *.tmp
 .agent-state.lock
+runs/
+approvals/
 
 # Claude Code
 .claude/
