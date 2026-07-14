@@ -97,6 +97,11 @@ llmwiki status
 The compiler preserves source provenance and returns no-evidence rather than
 inventing an answer when nothing relevant is indexed.
 
+`raw/manifest.json` records reconstructable source locations and original
+hashes. On a new device, use `llmwiki manifest` and `llmwiki restore-raw`
+before recompiling. Large binaries should live in Git LFS or external object
+storage rather than normal Git history.
+
 ## State and Git behavior
 
 - Mission and experiment files are written atomically.

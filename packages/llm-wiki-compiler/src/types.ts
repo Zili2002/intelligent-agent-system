@@ -24,6 +24,7 @@ export interface SourceProvenance {
   input: string;
   url?: string;
   provider?: string;
+  storageUri?: string;
 }
 
 export interface SourceArtifact {
@@ -44,6 +45,9 @@ export interface IngestOptions {
   provenanceKind?: SourceArtifact["provenance"]["kind"];
   url?: string;
   provider?: string;
+  storageUri?: string;
+  fileName?: string;
+  originalData?: Uint8Array;
 }
 
 export interface IngestResult {
@@ -140,4 +144,59 @@ export interface ServiceOptions {
   root?: string;
   fetch?: typeof globalThis.fetch;
   now?: () => Date;
+}
+
+export type RawRestoreMode = "existing" | "download" | "copy" | "none";
+
+export interface RawManifestOrigin {
+  kind: SourceProvenance["kind"];
+  input: string;
+  url?: string;
+  provider?: string;
+  storageUri?: string;
+  fileName?: string;
+  targetPath?: string;
+  originalSha256?: string;
+  sizeBytes?: number;
+  capturedAt: string;
+  restoreMode: RawRestoreMode;
+}
+
+export interface RawManifestEntry {
+  sourceId: string;
+  title: string;
+  mediaType: string;
+  normalizedSha256: string;
+  origins: RawManifestOrigin[];
+}
+
+export interface RawManifest {
+  version: 1;
+  updatedAt: string;
+  entries: RawManifestEntry[];
+}
+
+export interface RawManifestStatus {
+  path: string;
+  entries: number;
+  restorable: number;
+  existing: number;
+  unavailable: number;
+}
+
+export interface RestoreRawItem {
+  sourceId: string;
+  status: "restored" | "verified" | "skipped" | "unavailable" | "error";
+  path?: string;
+  message: string;
+}
+
+export interface RestoreRawResult {
+  manifestPath: string;
+  restored: number;
+  verified: number;
+  skipped: number;
+  unavailable: number;
+  errors: number;
+  items: RestoreRawItem[];
 }

@@ -21,6 +21,8 @@ llmwiki --root <repository> compile
 llmwiki --root <repository> query <question>
 llmwiki --root <repository> lint
 llmwiki --root <repository> status
+llmwiki --root <repository> manifest
+llmwiki --root <repository> restore-raw
 llmwiki --root <repository> search <query> [--limit N] [--import]
 llmwiki --root <repository> reflect
 llmwiki --root <repository> learn [--gaps N] [--limit N]
@@ -66,3 +68,38 @@ interface SearchProvider {
 ```
 
 This allows deterministic offline providers in autonomous agents and tests.
+
+## Raw source migration
+
+Every ingestion updates `raw/manifest.json` with:
+
+- processed source ID and normalized SHA-256
+- original byte hash and size when available
+- source URL, local path, provider, or external storage URI
+- a safe relative restoration path
+- whether the source is downloadable, copyable, already present, or unavailable
+
+Associate a local file with durable storage while ingesting:
+
+```bash
+llmwiki ingest paper.pdf \
+  --storage-uri "https://storage.example/paper.pdf"
+```
+
+On a new device:
+
+```bash
+llmwiki manifest
+llmwiki restore-raw
+llmwiki compile
+llmwiki lint
+```
+
+Restoration verifies the original SHA-256 before writing. Changed downloads,
+oversized files, and paths escaping `raw/` are rejected. Search metadata and
+experiment-generated evidence remain explicitly marked unavailable because
+they have no original binary source.
+
+Do not put credentials or long-lived signed query parameters in
+`--storage-uri`; the manifest is intended to be committed. Use a stable object
+identifier, Git LFS, or a separately authenticated restoration workflow.

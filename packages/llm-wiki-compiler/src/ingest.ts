@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { loadConfig } from "./config.js";
+import { recordRawManifest, validateStorageUri } from "./manifest.js";
 import type {
   IngestOptions,
   IngestResult,
@@ -60,6 +61,7 @@ export async function ingestContent(
   options: IngestOptions & ServiceOptions = {},
 ): Promise<IngestResult> {
   const config = await loadConfig(options.root);
+  if (options.storageUri) validateStorageUri(options.storageUri);
   const mediaType = options.mediaType ?? "text/plain";
   const normalized = normalizeByMediaType(content, mediaType);
   if (!normalized)
@@ -71,6 +73,7 @@ export async function ingestContent(
     input,
     ...(options.url ? { url: options.url } : {}),
     ...(options.provider ? { provider: options.provider } : {}),
+    ...(options.storageUri ? { storageUri: options.storageUri } : {}),
   };
   const existing = await readFile(artifactPath, "utf8").catch(
     (error: NodeJS.ErrnoException) => {
@@ -90,6 +93,7 @@ export async function ingestContent(
       artifact.provenanceHistory.push(provenance);
       await writeText(artifactPath, JSON.stringify(artifact, null, 2));
     }
+    await recordRawManifest(config, artifact, provenance, options);
     return {
       artifact,
       path: artifactPath,
@@ -110,12 +114,13 @@ export async function ingestContent(
     ingestedAt: (options.now ?? (() => new Date()))().toISOString(),
   };
   await writeText(artifactPath, JSON.stringify(artifact, null, 2));
+  await recordRawManifest(config, artifact, provenance, options);
   return { artifact, path: artifactPath, deduplicated: false };
 }
 
 export async function ingest(
   input: string,
-  options: ServiceOptions = {},
+  options: IngestOptions & ServiceOptions = {},
 ): Promise<IngestResult> {
   if (!input.trim()) throw new Error("Input path or URL is required");
   if (/^https?:\/\//i.test(input)) {
@@ -134,26 +139,34 @@ export async function ingest(
       const mediaType =
         response.headers.get("content-type")?.split(";")[0]?.trim() ||
         "text/plain";
+      const originalData = Buffer.from(await response.arrayBuffer());
+      const sourceFileName = options.fileName ?? fileNameFromUrl(input);
       if (mediaType === "application/pdf") {
-        const content = await parsePdf(
-          Buffer.from(await response.arrayBuffer()),
-        );
+        const content = await parsePdf(originalData);
         return ingestContent(content, input, {
           ...options,
           mediaType: "application/pdf",
           provenanceKind: "url",
           url: input,
+          ...(sourceFileName ? { fileName: sourceFileName } : {}),
+          originalData,
         });
       }
       if (!/^(text\/|application\/(json|xhtml\+xml))/i.test(mediaType)) {
         throw new Error(`Unsupported URL media type: ${mediaType}`);
       }
-      return ingestContent(await response.text(), input, {
-        ...options,
-        mediaType,
-        provenanceKind: "url",
-        url: input,
-      });
+      return ingestContent(
+        new TextDecoder("utf-8").decode(originalData),
+        input,
+        {
+          ...options,
+          mediaType,
+          provenanceKind: "url",
+          url: input,
+          ...(sourceFileName ? { fileName: sourceFileName } : {}),
+          originalData,
+        },
+      );
     } catch (error) {
       if (controller.signal.aborted)
         throw new Error(`Timed out fetching URL after 30 seconds: ${input}`);
@@ -170,15 +183,19 @@ export async function ingest(
   const mediaType = TEXT_EXTENSIONS.get(extension);
   if (!mediaType)
     throw new Error(`Unsupported input type "${extension || "(none)"}"`);
+  const originalData = await readFile(filePath);
   if (extension === ".pdf") {
-    const content = await parsePdf(await readFile(filePath));
-    return ingestContent(content, filePath, { ...options, mediaType });
+    const content = await parsePdf(originalData);
+    return ingestContent(content, filePath, {
+      ...options,
+      mediaType,
+      fileName: options.fileName ?? path.basename(filePath),
+      originalData,
+    });
   }
   let content: string;
   try {
-    content = new TextDecoder("utf-8", { fatal: true }).decode(
-      await readFile(filePath),
-    );
+    content = new TextDecoder("utf-8", { fatal: true }).decode(originalData);
   } catch (error) {
     throw new Error(
       `Input is not valid UTF-8: ${filePath}: ${(error as Error).message}`,
@@ -187,9 +204,19 @@ export async function ingest(
   return ingestContent(content, filePath, {
     ...options,
     mediaType,
+    fileName: options.fileName ?? path.basename(filePath),
+    originalData,
     title: titleFromContent(
       content,
       slugify(path.basename(filePath, extension)).replace(/-/g, " "),
     ),
   });
+}
+
+function fileNameFromUrl(input: string): string | undefined {
+  try {
+    return path.posix.basename(new URL(input).pathname) || undefined;
+  } catch {
+    return undefined;
+  }
 }

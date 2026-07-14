@@ -7,6 +7,7 @@ import {
   validateConfig,
 } from "./config.js";
 import type { ResolvedWikiConfig, WikiConfig } from "./types.js";
+import { backfillRawManifest, initializeRawManifest } from "./manifest.js";
 import { readTextIfExists, writeText } from "./utils.js";
 
 const WIKI_SECTIONS = [
@@ -76,6 +77,24 @@ export async function initWiki(
       2,
     ),
   );
+  await writeText(
+    path.join(resolved.schemaDir, "raw-manifest.schema.json"),
+    JSON.stringify(
+      {
+        $schema: "https://json-schema.org/draft/2020-12/schema",
+        title: "LLMWiki raw source reconstruction manifest",
+        type: "object",
+        required: ["version", "updatedAt", "entries"],
+        properties: {
+          version: { const: 1 },
+          updatedAt: { type: "string" },
+          entries: { type: "array" },
+        },
+      },
+      null,
+      2,
+    ),
+  );
   const initialFiles: Array<[string, string]> = [
     [
       path.join(resolved.wikiDir, "index.md"),
@@ -103,5 +122,7 @@ export async function initWiki(
       await writeText(filePath, content);
     }
   }
+  await initializeRawManifest(resolved);
+  await backfillRawManifest(resolved);
   return resolved;
 }

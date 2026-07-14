@@ -44,7 +44,7 @@ const program = new Command();
 program
   .name("autonomous-agent")
   .description("Mission-driven autonomous exploration system")
-  .version("0.3.0")
+  .version("0.3.1")
   .option(
     "-r, --root <path>",
     "Agent workspace containing missions/ and experiments/",

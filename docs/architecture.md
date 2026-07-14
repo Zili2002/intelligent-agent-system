@@ -72,6 +72,8 @@ Mission-specific experiment code.
 raw file / URL / search result / experiment
   ↓ ingest
 sources/<sha256>.json
+  ↓ manifest
+raw/manifest.json (original hash + restoration URI)
   ↓ compile
 wiki/sources + wiki/concepts + index + log
   ↓
@@ -84,6 +86,10 @@ Crossref search → evidence import → recompile
 
 Generated pages preserve source provenance and retain user content placed after
 the generated marker.
+
+Raw binaries are optional. The manifest separates portable reconstruction
+metadata from Git-hosted Markdown/JSON. A restore operation downloads or copies
+the original bytes, validates their hash, and writes only inside `raw/`.
 
 ## Persistence
 

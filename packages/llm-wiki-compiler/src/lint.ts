@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { loadConfig } from "./config.js";
+import { loadRawManifest, safeRawTarget } from "./manifest.js";
 import type { LintIssue, LintResult, ServiceOptions } from "./types.js";
 import {
   GENERATED_END,
@@ -55,6 +56,7 @@ export async function lintWiki(
   const warnings: LintIssue[] = [];
   const slugFiles = new Map<string, string[]>();
   const markdownFiles = await walkFiles(config.wikiDir, ".md");
+  const sourceFiles = await walkFiles(config.sourcesDir, ".json");
 
   for (const file of markdownFiles) {
     const content = await readFile(file, "utf8");
@@ -211,6 +213,50 @@ export async function lintWiki(
           file,
           config.root,
           `Slug "${slug}" is used by ${files.length} pages`,
+        );
+      }
+    }
+  }
+  const manifest = await loadRawManifest({ root: config.root });
+  const manifestIds = new Set(manifest.entries.map((entry) => entry.sourceId));
+  const sourceIds = new Set(
+    sourceFiles.map((file) => path.basename(file, ".json")),
+  );
+  for (const sourceId of sourceIds) {
+    if (!manifestIds.has(sourceId)) {
+      issue(
+        warnings,
+        "warning",
+        "missing-raw-manifest",
+        path.join(config.sourcesDir, `${sourceId}.json`),
+        config.root,
+        "Processed source has no raw reconstruction manifest entry",
+      );
+    }
+  }
+  for (const entry of manifest.entries) {
+    if (!sourceIds.has(entry.sourceId)) {
+      issue(
+        errors,
+        "error",
+        "orphan-raw-manifest",
+        path.join(config.rawDir, "manifest.json"),
+        config.root,
+        `Manifest references missing source artifact ${entry.sourceId}.json`,
+      );
+    }
+    for (const origin of entry.origins) {
+      if (!origin.targetPath) continue;
+      try {
+        safeRawTarget(config.rawDir, origin.targetPath);
+      } catch (error) {
+        issue(
+          errors,
+          "error",
+          "unsafe-raw-target",
+          path.join(config.rawDir, "manifest.json"),
+          config.root,
+          error instanceof Error ? error.message : String(error),
         );
       }
     }

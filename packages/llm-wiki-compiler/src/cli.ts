@@ -36,7 +36,7 @@ function positiveInteger(value: string): number {
 program
   .name("llmwiki")
   .description("Deterministic, evidence-first local wiki compiler")
-  .version("0.2.0")
+  .version("0.3.0")
   .option("-r, --root <path>", "repository root", process.cwd());
 
 program
@@ -51,9 +51,53 @@ program
   .command("ingest")
   .description("ingest a local file or HTTP(S) URL")
   .argument("<input>", "file path or URL")
-  .action(async (input: string) => {
-    output(await new WikiCompiler({ root: root() }).ingest(input));
-    await commit("Ingest wiki source");
+  .option("--storage-uri <uri>", "External URI used to reconstruct raw content")
+  .option("--file-name <name>", "Preferred restored raw filename")
+  .action(
+    async (
+      input: string,
+      commandOptions: { storageUri?: string; fileName?: string },
+    ) => {
+      output(
+        await new WikiCompiler({ root: root() }).ingest(input, commandOptions),
+      );
+      await commit("Ingest wiki source");
+    },
+  );
+
+program
+  .command("manifest")
+  .description("show raw reconstruction manifest status")
+  .option("--full", "output the complete manifest")
+  .action(async (commandOptions: { full?: boolean }) => {
+    const compiler = new WikiCompiler({ root: root() });
+    output(
+      commandOptions.full
+        ? await compiler.manifest()
+        : await compiler.manifestStatus(),
+    );
+  });
+
+program
+  .command("restore-raw")
+  .description("restore raw files from manifest URLs or storage URIs")
+  .option("--force", "replace an existing file after verifying the source")
+  .option(
+    "--max-mb <number>",
+    "maximum restored file size in MB",
+    positiveInteger,
+    100,
+  )
+  .action(async (commandOptions: { force?: boolean; maxMb: number }) => {
+    const result = await new WikiCompiler({ root: root() }).restoreRaw({
+      ...(commandOptions.force ? { force: true } : {}),
+      maxFileBytes: commandOptions.maxMb * 1024 * 1024,
+    });
+    output(result);
+    if (result.restored > 0) {
+      await commit("Restore raw wiki sources");
+    }
+    if (result.errors > 0) process.exitCode = 1;
   });
 
 program

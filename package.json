@@ -1,6 +1,6 @@
 {
   "name": "intelligent-agent-system",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Self-evolving autonomous agent system with mission-driven exploration and knowledge compilation",
   "private": true,
   "engines": {

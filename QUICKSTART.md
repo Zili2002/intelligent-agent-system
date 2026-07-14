@@ -123,3 +123,19 @@ node packages/autonomous-agent/dist/cli.js \
 ```
 
 commit 和 push 也必须通过 handoff 的对应显式参数开启。
+
+## 7. 新设备恢复 Raw 来源
+
+```bash
+node packages/llm-wiki-compiler/dist/cli.js \
+  --root ../my-research-wiki manifest
+
+node packages/llm-wiki-compiler/dist/cli.js \
+  --root ../my-research-wiki restore-raw
+
+node packages/llm-wiki-compiler/dist/cli.js \
+  --root ../my-research-wiki compile
+```
+
+本地 PDF 应在摄入时通过 `--storage-uri` 指向 Git LFS、OneDrive、Azure
+Blob 或其他可迁移存储。恢复过程会验证原始 SHA-256。

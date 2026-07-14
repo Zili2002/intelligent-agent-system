@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { after, before, test } from "node:test";
+import { pathToFileURL } from "node:url";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 import {
   autoCommitIfEnabled,
@@ -13,8 +14,10 @@ import {
   learnWiki,
   lintWiki,
   loadConfig,
+  loadRawManifest,
   queryWiki,
   reflectWiki,
+  restoreRaw,
   searchWiki,
   slugify,
   type SearchProvider,
@@ -90,6 +93,10 @@ test("init creates validated configured directories", async () => {
     await readFile(path.join(root, "meta", "evolution_log.md"), "utf8"),
     /Evolution log/,
   );
+  assert.match(
+    await readFile(path.join(root, "inputs", "manifest.json"), "utf8"),
+    /"version": 1/,
+  );
   assert.equal(await autoCommitIfEnabled(root), false);
   assert.equal(slugify("主动学习"), "主动学习");
 });
@@ -107,6 +114,7 @@ test("ingestion normalizes and deduplicates by SHA-256", async () => {
     root,
     now: () => new Date("2026-01-01T00:00:00Z"),
   });
+
   const duplicate = await ingestContent(
     "# Retrieval\n\nRetrieval systems index evidence.",
     "other.md",
@@ -120,6 +128,120 @@ test("ingestion normalizes and deduplicates by SHA-256", async () => {
   assert.equal(first.artifact.hash, duplicate.artifact.hash);
   assert.equal(first.artifact.provenance.input, source);
   assert.equal(duplicate.artifact.provenanceHistory.length, 2);
+  assert.equal(
+    (await loadRawManifest({ root })).entries[0]?.origins[0]?.restoreMode,
+    "none",
+  );
+});
+
+test("local raw files restore from an external storage URI with hash verification", async () => {
+  const root = await workspace("restore-local");
+  await initWiki(root);
+  const input = path.join(root, "input.txt");
+  const storage = path.join(root, "storage", "input.txt");
+  await mkdir(path.dirname(storage), { recursive: true });
+  await Promise.all([
+    writeFile(input, "portable raw evidence", "utf8"),
+    writeFile(storage, "portable raw evidence", "utf8"),
+  ]);
+  const ingested = await ingest(input, {
+    root,
+    storageUri: pathToFileURL(storage).href,
+  });
+  await rm(input);
+
+  const manifest = await loadRawManifest({ root });
+  const origin = manifest.entries[0]?.origins[0];
+  assert.equal(manifest.entries[0]?.sourceId, ingested.artifact.id);
+  assert.equal(origin?.restoreMode, "copy");
+  assert.ok(origin?.originalSha256);
+
+  const restored = await restoreRaw({ root });
+  assert.equal(restored.restored, 1);
+  assert.equal(
+    await readFile(path.join(root, "raw", origin!.targetPath!), "utf8"),
+    "portable raw evidence",
+  );
+  const verified = await restoreRaw({ root });
+  assert.equal(verified.verified, 1);
+});
+
+test("URL raw restore rejects changed content and preserves the target", async () => {
+  const root = await workspace("restore-url");
+  await initWiki(root);
+  const url = "https://example.invalid/source.txt";
+  await ingest(url, {
+    root,
+    fetch: async () =>
+      new Response("original remote evidence", {
+        headers: { "content-type": "text/plain" },
+      }),
+  });
+
+  const mismatch = await restoreRaw({
+    root,
+    fetch: async () =>
+      new Response("changed remote evidence", {
+        headers: { "content-type": "text/plain" },
+      }),
+  });
+  assert.equal(mismatch.errors, 1);
+  const manifest = await loadRawManifest({ root });
+  const target = manifest.entries[0]?.origins[0]?.targetPath;
+  await assert.rejects(() => readFile(path.join(root, "raw", target!)));
+
+  const restored = await restoreRaw({
+    root,
+    fetch: async () =>
+      new Response("original remote evidence", {
+        headers: { "content-type": "text/plain" },
+      }),
+  });
+  assert.equal(restored.restored, 1);
+});
+
+test("raw restore reports generated evidence and blocks path traversal", async () => {
+  const root = await workspace("restore-safety");
+  await initWiki(root);
+  await ingestContent("Generated experiment evidence", "exp-restore", {
+    root,
+    provenanceKind: "experiment",
+  });
+  const unavailable = await restoreRaw({ root });
+  assert.equal(unavailable.unavailable, 1);
+
+  const manifestPath = path.join(root, "raw", "manifest.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.entries[0].origins[0].restoreMode = "copy";
+  manifest.entries[0].origins[0].targetPath = "../escape.txt";
+  manifest.entries[0].origins[0].storageUri = pathToFileURL(
+    path.join(root, "storage.txt"),
+  ).href;
+  await writeFile(
+    path.join(root, "storage.txt"),
+    "Generated experiment evidence",
+  );
+  await writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
+
+  const traversal = await restoreRaw({ root });
+  assert.equal(traversal.errors, 1);
+  await assert.rejects(() => readFile(path.join(root, "escape.txt")));
+});
+
+test("init backfills manifests for legacy processed sources", async () => {
+  const root = await workspace("manifest-backfill");
+  await initWiki(root);
+  const ingested = await ingestContent(
+    "Legacy processed evidence with no original raw manifest.",
+    "legacy.md",
+    { root, mediaType: "text/markdown" },
+  );
+  await rm(path.join(root, "raw", "manifest.json"));
+  await initWiki(root);
+
+  const manifest = await loadRawManifest({ root });
+  assert.equal(manifest.entries[0]?.sourceId, ingested.artifact.id);
+  assert.equal(manifest.entries[0]?.origins[0]?.originalSha256, undefined);
 });
 
 test("URL ingestion uses injected fetch and preserves URL provenance", async () => {
@@ -259,6 +381,18 @@ test("malformed and unsupported inputs fail", async () => {
   const invalidUtf8 = path.join(root, "invalid.txt");
   await writeFile(invalidUtf8, Buffer.from([0xff, 0xfe, 0xfd]));
   await assert.rejects(() => ingest(invalidUtf8, { root }), /not valid UTF-8/);
+  const portable = path.join(root, "portable.txt");
+  await writeFile(portable, "portable", "utf8");
+  await assert.rejects(
+    () => ingest(portable, { root, storageUri: "relative/storage.txt" }),
+    /storageUri must be/,
+  );
+  assert.deepEqual(
+    (await readdir(path.join(root, "sources"))).filter((name) =>
+      name.endsWith(".json"),
+    ),
+    [],
+  );
   await writeFile(path.join(root, ".llmwiki-config.json"), "{bad", "utf8");
   await assert.rejects(() => loadConfig(root), /Malformed JSON/);
 });
