@@ -28,10 +28,17 @@ autonomous-agent
 llm-wiki-compiler
   ├─ config and initialization
   ├─ ingest and SHA-256 deduplication
-  ├─ deterministic compile and graph
-  ├─ cited lexical query
-  ├─ lint and heuristic reflection
-  └─ Crossref search and bounded learning
+  ├─ Crossref / arXiv / OpenAlex provider registry
+  ├─ normalized identifier merge and OA full-text acquisition
+  ├─ section-aware chunking and independent chunk cache
+  ├─ complete Claim Registry and rejected-claim audit
+  ├─ topic-sharded synthesis and full-registry relationship graph
+  ├─ deterministic source scoring and Claim evidence confidence
+  ├─ cached LLM source analysis and synthesis
+  ├─ validated Claim–Evidence graph and cited LLM query
+  ├─ deterministic provenance/link/schema validation
+  ├─ LLM reflection with referenced claims and sources
+  └─ multi-provider LLM-screened bounded learning
 
 shared
   ├─ AgentState types
@@ -81,11 +88,73 @@ meta/knowledge_graph.json + gaps + capabilities
   ↓ reflect
 meta/reflection/<timestamp>.md
   ↓ optional learn
-Crossref search → evidence import → recompile
+Crossref / arXiv / OpenAlex → merge → OA full text → chunk → recompile
 ```
+
+arXiv requests are globally serialized at a minimum three-second interval.
+OpenAlex credentials remain environment-only. Learning shares one download and
+Token budget across all selected gaps and never treats a landing page as
+downloadable full text.
+
+`meta/claims.json` is the durable evidence registry. The 16-Claim summary graph
+is only a compatibility and index view. `meta/claim_graph.json` and generated
+topic pages may reference any accepted Registry Claim, so contradiction
+knowledge is not lost when a Claim is absent from the summary.
+
+`meta/source_scores.json` and `meta/claim_confidence.json` are deterministic,
+auditable quality artifacts. Scores use stored evidence facts (not an LLM) and
+confidence describes evidence strength rather than truth probability. Synthetic
+simulation evidence is explicitly detected and capped. `corroborate` turns
+weak Claims into separate confirming and challenging searches, then recompiles
+only uncached evidence work. `contradiction_adjudications.json` stores
+LLM-assisted but schema-constrained resolutions whose rationales may cite only
+the immutable Claims supplied to the adjudicator; unresolved or insufficient
+evidence remains explicit rather than being converted into a verdict.
+
+`meta/semantic_index.json` is a content-addressed local Claim vector index.
+MiniLM embeddings are normalized and quantized to signed bytes; unchanged
+Claim hashes reuse existing vectors, removed Claims disappear, and stale
+vectors are ignored by query. Hybrid retrieval combines semantic, lexical,
+graph, confidence, and contradiction-pair signals before the bounded LLM
+answer/rerank step. `retrieval_benchmark.json` is fixed after creation and
+`retrieval_evaluation.json` records Recall@10, citation validity and recall,
+no-evidence refusal, contradiction coverage, latency, and Token usage.
+
+The embedding profile includes model, ONNX dtype, query prefix, and passage
+prefix. This prevents vectors produced with E5-style `query: `/`passage: `
+inputs from being mixed with MiniLM vectors. Candidate indexes and evaluation
+artifacts live beside the production index and never replace it without an
+explicit measured decision.
+
+`meta/evidence_frontier.json` is the backpressure boundary for autonomous
+search. Exact intent-aware fingerprints and local MiniLM vectors merge lexical
+and semantic duplicates across gaps and Claims without merging support and
+challenge intent. Stable problem/topic IDs enforce hierarchical quotas.
+Selection ranks expected information gain while preserving problem/topic
+diversity. At 70% capacity low-priority admission is throttled; at 90% only
+critical or refresh work is admitted. Repeated no-novelty searches open a
+long-cooldown circuit breaker. Terminal entries compact into bounded
+fingerprint-only history, and a cross-process lock prevents concurrent writers
+from bypassing capacity.
+
+`refresh` checks OpenAlex metadata and exact arXiv versions on a configured
+interval. A newer version creates one high-priority Frontier clue instead of
+immediate unbounded fan-out. `knowledge_lifecycle.json` records metadata,
+version, retraction, and source-supersession events. Retracted and superseded
+Claims are excluded from normal affirmative retrieval; version-review Claims
+remain provisional until the new full text is acquired.
 
 Generated pages preserve source provenance and retain user content placed after
 the generated marker.
+
+Semantic Wiki operations have no rule-based content fallback. They require a
+non-empty research focus, Anthropic credentials, and explicit Wiki-specific
+approval. Exact source quotes, source IDs, claim IDs, cache keys, and token
+limits are validated deterministically. Agent Wiki calls use a separate
+approval boundary and count actual usage against the Mission token budget.
+The default reasoning configuration uses Claude Opus 4.8 adaptive thinking at
+high effort; sampling temperature is omitted because Opus 4.8 does not expose
+adjustable sampling controls.
 
 Raw binaries are optional. The manifest separates portable reconstruction
 metadata from Git-hosted Markdown/JSON. A restore operation downloads or copies

@@ -17,6 +17,7 @@ const WIKI_SECTIONS = [
   "methods",
   "patterns",
   "tools",
+  "topics",
 ];
 
 export async function initWiki(
@@ -72,6 +73,25 @@ export async function initWiki(
           "provenanceHistory",
           "ingestedAt",
         ],
+        properties: {
+          literature: {
+            type: "object",
+            description:
+              "Normalized literature identifiers, OA status, license, citation count, provider work type, explicit retraction status, and provider provenance. Work type is not a peer-review claim.",
+            properties: {
+              workType: {
+                type: "string",
+                description:
+                  "Provider-supplied work classification, not peer-review status.",
+              },
+              isRetracted: {
+                type: "boolean",
+                description:
+                  "Explicit provider retraction status; omission means unknown.",
+              },
+            },
+          },
+        },
       },
       null,
       2,

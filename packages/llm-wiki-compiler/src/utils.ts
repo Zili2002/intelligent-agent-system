@@ -12,59 +12,6 @@ import path from "node:path";
 export const GENERATED_START = "<!-- llmwiki:generated:start -->";
 export const GENERATED_END = "<!-- llmwiki:generated:end -->";
 
-export const STOP_WORDS = new Set([
-  "about",
-  "after",
-  "also",
-  "and",
-  "are",
-  "because",
-  "been",
-  "before",
-  "being",
-  "between",
-  "both",
-  "but",
-  "can",
-  "could",
-  "does",
-  "each",
-  "for",
-  "from",
-  "had",
-  "has",
-  "have",
-  "into",
-  "its",
-  "may",
-  "more",
-  "not",
-  "other",
-  "our",
-  "should",
-  "such",
-  "than",
-  "that",
-  "the",
-  "their",
-  "then",
-  "there",
-  "these",
-  "they",
-  "this",
-  "through",
-  "under",
-  "using",
-  "was",
-  "were",
-  "which",
-  "will",
-  "with",
-  "would",
-  "you",
-  "your",
-]);
-
 export function sha256(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
 }
@@ -101,36 +48,6 @@ export function htmlToText(html: string): string {
       .replace(/&quot;/gi, '"')
       .replace(/&#39;/gi, "'"),
   );
-}
-
-export function tokenize(value: string): string[] {
-  return value.toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}-]{1,}/gu) ?? [];
-}
-
-export function keywords(value: string, limit = 8): string[] {
-  const counts = new Map<string, number>();
-  for (const token of tokenize(value)) {
-    if (token.length < 3 || STOP_WORDS.has(token) || /^\d+$/.test(token))
-      continue;
-    counts.set(token, (counts.get(token) ?? 0) + 1);
-  }
-  return [...counts]
-    .sort(([a, ac], [b, bc]) => bc - ac || a.localeCompare(b))
-    .slice(0, limit)
-    .map(([token]) => token);
-}
-
-export function extractiveSummary(
-  value: string,
-  maxSentences = 3,
-  maxLength = 700,
-): string {
-  const sentences = normalizeText(value)
-    .split(/(?<=[.!?])\s+|\n+/)
-    .map((sentence) => sentence.trim())
-    .filter((sentence) => sentence.length >= 20);
-  const chosen = sentences.slice(0, maxSentences).join(" ");
-  return (chosen || normalizeText(value)).slice(0, maxLength).trim();
 }
 
 export function quoteYaml(value: string): string {

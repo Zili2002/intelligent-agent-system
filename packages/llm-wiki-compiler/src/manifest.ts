@@ -100,8 +100,16 @@ export async function recordRawManifest(
     manifest.entries.push(entry);
   }
   const key = originKey(origin);
-  if (!entry.origins.some((candidate) => originKey(candidate) === key)) {
+  const originIndex = entry.origins.findIndex(
+    (candidate) => originKey(candidate) === key,
+  );
+  if (originIndex < 0) {
     entry.origins.push(origin);
+  } else {
+    entry.origins[originIndex] = {
+      ...entry.origins[originIndex],
+      ...origin,
+    };
   }
   entry.title = artifact.title;
   entry.mediaType = artifact.mediaType;
@@ -124,6 +132,35 @@ export async function backfillRawManifest(
   config: ResolvedWikiConfig,
 ): Promise<void> {
   const manifest = await loadRawManifestForConfig(config);
+  let upgraded = false;
+  for (const entry of manifest.entries) {
+    for (const origin of entry.origins) {
+      if (
+        origin.restoreMode === "none" &&
+        origin.kind === "search" &&
+        origin.url &&
+        origin.originalSha256 &&
+        /^(?:application\/pdf|text\/html|text\/plain|application\/xml)$/.test(
+          entry.mediaType,
+        )
+      ) {
+        const fileName =
+          origin.fileName ??
+          `${slugify(entry.title)}${extensionForMediaType(entry.mediaType)}`;
+        origin.fileName = safeFileName(fileName);
+        origin.targetPath = path.posix.join(
+          "restored",
+          `${entry.sourceId.slice(0, 8)}-${origin.fileName}`,
+        );
+        origin.restoreMode = "download";
+        upgraded = true;
+      }
+    }
+  }
+  if (upgraded) {
+    manifest.updatedAt = new Date().toISOString();
+    await saveRawManifest(config, manifest);
+  }
   const known = new Set(manifest.entries.map((entry) => entry.sourceId));
   for (const file of await walkFiles(config.sourcesDir, ".json")) {
     const artifact = JSON.parse(await readFile(file, "utf8")) as SourceArtifact;
@@ -197,7 +234,9 @@ function buildOrigin(
       ? "existing"
       : storageUri
         ? storageMode(storageUri)
-        : provenance.kind === "url" && provenance.url
+        : (provenance.kind === "url" ||
+              (provenance.kind === "search" && originalData)) &&
+            provenance.url
           ? "download"
           : "none";
   const targetPath =

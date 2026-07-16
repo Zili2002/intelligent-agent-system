@@ -50,7 +50,7 @@ export function analyzeExperiment(
 function normalizeMetricUpdates(
   updates?: Record<string, string | number | boolean>,
 ): Record<string, string> {
-  if (!updates) {
+  if (!isRecord(updates)) {
     return {};
   }
 

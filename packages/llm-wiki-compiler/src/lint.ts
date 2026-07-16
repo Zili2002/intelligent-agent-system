@@ -63,6 +63,7 @@ export async function lintWiki(
     const generated =
       content.includes(GENERATED_START) ||
       frontmatterValue(content, "generated") === "true";
+    const generatedType = frontmatterValue(content, "type");
     const slug = frontmatterValue(content, "slug");
     if (slug) slugFiles.set(slug, [...(slugFiles.get(slug) ?? []), file]);
 
@@ -94,7 +95,6 @@ export async function lintWiki(
           "Generated page lacks title or type metadata",
         );
       }
-      const generatedType = frontmatterValue(content, "type");
       if (
         generatedType === "source" &&
         (!frontmatterValue(content, "source_id") ||
@@ -169,7 +169,11 @@ export async function lintWiki(
       }
     }
 
-    for (const match of content.matchAll(
+    const sourceTextIndex =
+      generatedType === "source" ? content.indexOf("\n## Source text\n") : -1;
+    const linkContent =
+      sourceTextIndex >= 0 ? content.slice(0, sourceTextIndex) : content;
+    for (const match of linkContent.matchAll(
       /!?\[[^\]]*]\(([^)]+)\)|\[\[([^|\]]+)(?:\|[^\]]+)?]]/g,
     )) {
       const link = (match[1] ?? match[2] ?? "").trim().split("#")[0] ?? "";

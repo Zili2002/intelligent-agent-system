@@ -14,7 +14,6 @@ import {
   isFile,
   normalizeText,
   sha256,
-  slugify,
   writeText,
 } from "./utils.js";
 
@@ -55,6 +54,47 @@ async function parsePdf(buffer: Buffer): Promise<string> {
   }
 }
 
+function mergeLiterature(
+  existing: NonNullable<SourceArtifact["literature"]>,
+  incoming: NonNullable<SourceArtifact["literature"]>,
+): NonNullable<SourceArtifact["literature"]> {
+  const providers = [
+    ...new Set([
+      existing.provider,
+      ...(existing.providers ?? []),
+      incoming.provider,
+      ...(incoming.providers ?? []),
+    ]),
+  ];
+  const sourceProvenance = [
+    ...(existing.sourceProvenance ?? []),
+    ...(incoming.sourceProvenance ?? []),
+  ].filter(
+    (entry, index, all) =>
+      all.findIndex(
+        (candidate) =>
+          candidate.provider === entry.provider &&
+          candidate.id === entry.id &&
+          candidate.url === entry.url,
+      ) === index,
+  );
+  return {
+    ...existing,
+    ...incoming,
+    provider: existing.provider,
+    providers,
+    ...(Math.max(existing.citationCount ?? 0, incoming.citationCount ?? 0) > 0
+      ? {
+          citationCount: Math.max(
+            existing.citationCount ?? 0,
+            incoming.citationCount ?? 0,
+          ),
+        }
+      : {}),
+    ...(sourceProvenance.length ? { sourceProvenance } : {}),
+  };
+}
+
 export async function ingestContent(
   content: string,
   input: string,
@@ -84,6 +124,16 @@ export async function ingestContent(
   if (existing) {
     const artifact = JSON.parse(existing) as SourceArtifact;
     artifact.provenanceHistory ??= [artifact.provenance];
+    let changed = false;
+    if (options.literature) {
+      const merged = artifact.literature
+        ? mergeLiterature(artifact.literature, options.literature)
+        : options.literature;
+      if (JSON.stringify(artifact.literature) !== JSON.stringify(merged)) {
+        artifact.literature = merged;
+        changed = true;
+      }
+    }
     const provenanceKey = JSON.stringify(provenance);
     if (
       !artifact.provenanceHistory.some(
@@ -91,8 +141,10 @@ export async function ingestContent(
       )
     ) {
       artifact.provenanceHistory.push(provenance);
-      await writeText(artifactPath, JSON.stringify(artifact, null, 2));
+      changed = true;
     }
+    if (changed)
+      await writeText(artifactPath, JSON.stringify(artifact, null, 2));
     await recordRawManifest(config, artifact, provenance, options);
     return {
       artifact,
@@ -111,11 +163,38 @@ export async function ingestContent(
     content: normalized,
     provenance,
     provenanceHistory: [provenance],
+    ...(options.literature ? { literature: options.literature } : {}),
     ingestedAt: (options.now ?? (() => new Date()))().toISOString(),
   };
   await writeText(artifactPath, JSON.stringify(artifact, null, 2));
   await recordRawManifest(config, artifact, provenance, options);
   return { artifact, path: artifactPath, deduplicated: false };
+}
+
+/** Ingest downloaded bytes while retaining their original hash in the raw manifest. */
+export async function ingestBytes(
+  data: Uint8Array,
+  input: string,
+  options: IngestOptions & ServiceOptions = {},
+): Promise<IngestResult> {
+  const mediaType = options.mediaType ?? "text/plain";
+  const originalData = Buffer.from(data);
+  if (mediaType === "application/pdf") {
+    return ingestContent(await parsePdf(originalData), input, {
+      ...options,
+      mediaType,
+      originalData,
+    });
+  }
+  let content: string;
+  try {
+    content = new TextDecoder("utf-8", { fatal: true }).decode(originalData);
+  } catch (error) {
+    throw new Error(
+      `Input is not valid UTF-8: ${input}: ${(error as Error).message}`,
+    );
+  }
+  return ingestContent(content, input, { ...options, mediaType, originalData });
 }
 
 export async function ingest(
@@ -139,34 +218,19 @@ export async function ingest(
       const mediaType =
         response.headers.get("content-type")?.split(";")[0]?.trim() ||
         "text/plain";
-      const originalData = Buffer.from(await response.arrayBuffer());
       const sourceFileName = options.fileName ?? fileNameFromUrl(input);
-      if (mediaType === "application/pdf") {
-        const content = await parsePdf(originalData);
-        return ingestContent(content, input, {
-          ...options,
-          mediaType: "application/pdf",
-          provenanceKind: "url",
-          url: input,
-          ...(sourceFileName ? { fileName: sourceFileName } : {}),
-          originalData,
-        });
-      }
       if (!/^(text\/|application\/(json|xhtml\+xml))/i.test(mediaType)) {
-        throw new Error(`Unsupported URL media type: ${mediaType}`);
+        if (mediaType !== "application/pdf") {
+          throw new Error(`Unsupported URL media type: ${mediaType}`);
+        }
       }
-      return ingestContent(
-        new TextDecoder("utf-8").decode(originalData),
-        input,
-        {
-          ...options,
-          mediaType,
-          provenanceKind: "url",
-          url: input,
-          ...(sourceFileName ? { fileName: sourceFileName } : {}),
-          originalData,
-        },
-      );
+      return ingestBytes(new Uint8Array(await response.arrayBuffer()), input, {
+        ...options,
+        mediaType,
+        provenanceKind: "url",
+        url: input,
+        ...(sourceFileName ? { fileName: sourceFileName } : {}),
+      });
     } catch (error) {
       if (controller.signal.aborted)
         throw new Error(`Timed out fetching URL after 30 seconds: ${input}`);
@@ -184,32 +248,10 @@ export async function ingest(
   if (!mediaType)
     throw new Error(`Unsupported input type "${extension || "(none)"}"`);
   const originalData = await readFile(filePath);
-  if (extension === ".pdf") {
-    const content = await parsePdf(originalData);
-    return ingestContent(content, filePath, {
-      ...options,
-      mediaType,
-      fileName: options.fileName ?? path.basename(filePath),
-      originalData,
-    });
-  }
-  let content: string;
-  try {
-    content = new TextDecoder("utf-8", { fatal: true }).decode(originalData);
-  } catch (error) {
-    throw new Error(
-      `Input is not valid UTF-8: ${filePath}: ${(error as Error).message}`,
-    );
-  }
-  return ingestContent(content, filePath, {
+  return ingestBytes(originalData, filePath, {
     ...options,
     mediaType,
     fileName: options.fileName ?? path.basename(filePath),
-    originalData,
-    title: titleFromContent(
-      content,
-      slugify(path.basename(filePath, extension)).replace(/-/g, " "),
-    ),
   });
 }
 

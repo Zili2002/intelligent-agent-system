@@ -169,7 +169,12 @@ export async function designExperimentForMission(
   const response = await client.messages.create({
     model: llmConfig.model,
     max_tokens: plan.requestedOutputTokens,
-    temperature: 0,
+    ...(llmConfig.thinking.type === "adaptive"
+      ? {
+          thinking: { type: "adaptive" as const },
+          output_config: { effort: llmConfig.thinking.effort },
+        }
+      : { temperature: 0 }),
     system: DESIGN_SYSTEM_PROMPT,
     messages: [
       {
@@ -275,7 +280,8 @@ The JavaScript must:
 - write results.json with status, hypothesisSupported, measurements,
   metricUpdates, findings, unexpectedFindings, knowledgeGaps, and nextSteps;
 - set runId to process.env.EXPERIMENT_RUN_ID in results.json;
-- use exact success-metric names for metricUpdates;
+- make metricUpdates a JSON object whose keys are exact success-metric names
+  and whose values are scalar strings, numbers, or booleans; never use an array;
 - report null or inconclusive when evidence cannot support a conclusion;
 - not contain Markdown fences.`;
 }

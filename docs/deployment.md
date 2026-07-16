@@ -27,10 +27,14 @@ Important settings:
 - `sandbox.type`: `docker`, `local`, or `hybrid`
 - `analysis.mode`: `rule-based`, `llm`, or `hybrid`
 - `analysis.llm`: model, token limit, and configurable token pricing
+- `analysis.llm.thinking`: adaptive/disabled mode and effort level
 - `budget`: auto-approval and stop thresholds
 - `wikiPath`: companion repository path
 - `autoCompileWiki`: compile verified experiment evidence
 - `autoLearnWiki`: allow network search from generated gaps
+- `wikiLlm.approved`: persistent, explicit approval for billable Wiki LLM calls
+- `wikiLlm.maxTokensPerSync`: per-sync cap, additionally bounded by the Mission
+  token budget
 - `maxIterations`: hard Mission iteration limit
 
 Environment overrides:
@@ -40,11 +44,48 @@ ANTHROPIC_API_KEY=...
 ANTHROPIC_AUTH_TOKEN=...
 ANTHROPIC_BASE_URL=http://localhost:...
 ANTHROPIC_MODEL=...
+OPENALEX_API_KEY=...
+OPENALEX_MAILTO=...
+LLMWIKI_MODEL_CACHE=C:\model-cache
 WIKI_PATH=../my-research-wiki
 AGENT_SANDBOX=local
 ```
 
 Do not commit `.env` files.
+
+The Wiki repository must also define a non-empty `researchFocus` and `llm`
+limits in `.llmwiki-config.json`. Direct semantic CLI commands require the
+global `--approve-llm` flag and default to a 10,000-token operation guard,
+configurable with `--max-llm-tokens`. Raw search, ingestion, status, lint,
+manifest, and restoration do not call the model.
+
+`llmwiki index` downloads the configured public ONNX embedding model on first
+use and performs inference locally. Set `LLMWIKI_MODEL_CACHE` to persistent
+storage outside the Wiki Git repository; only the quantized
+`meta/semantic_index.json` artifact is portable.
+
+Run `llmwiki refresh` on a schedule no more frequently than
+`lifecycle.refreshIntervalHours`. Process accumulated work with
+`llmwiki --approve-llm frontier-run`; each cycle is hard-capped by
+`maxQueriesPerCycle`, provider result limits, download limits, and the operation
+Token budget. Multiple rapid scheduler ticks therefore do not multiply search
+fan-out.
+
+Frontier admission becomes `throttled` at the configured high watermark and
+`critical` at the critical watermark. Monitor `frontierOccupancyPercent`,
+`frontierAdmissionMode`, semantic-deduplication, circuit-breaker, and compaction
+counters through `llmwiki status` or `llmwiki frontier`. The Frontier file is
+cross-process locked, so multiple schedulers cannot exceed quotas by racing.
+
+arXiv metadata search requires no credential and is throttled to one request
+start every three seconds. OpenAlex requires `OPENALEX_API_KEY`. Full-text
+acquisition accepts only explicit PDF/HTML/text/XML locations, defaults to
+open-access-only, and never follows a landing page as downloadable content.
+
+The default Anthropic configuration is `claude-opus-4-8` with adaptive
+thinking and high effort. Proxy-specific aliases are supported through
+`ANTHROPIC_MODEL`; terminal-format suffixes are removed only in memory before
+the request.
 
 ## Docker image
 

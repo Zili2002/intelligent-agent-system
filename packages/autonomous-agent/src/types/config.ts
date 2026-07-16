@@ -28,6 +28,10 @@ export interface AnalysisConfig {
     maxTokens: number;
     inputCostPerMillionTokens: number;
     outputCostPerMillionTokens: number;
+    thinking: {
+      type: "disabled" | "adaptive";
+      effort: "low" | "medium" | "high" | "xhigh" | "max";
+    };
   };
 }
 
@@ -53,6 +57,11 @@ export interface AgentConfig {
   autoCompileWiki: boolean;
   autoLearnWiki: boolean;
   wikiSearchResultLimit: number;
+  /** Separate approval for billable Wiki LLM compilation; experiment approval never enables it. */
+  wikiLlm?: {
+    approved: boolean;
+    maxTokensPerSync: number;
+  };
   maxIterations: number;
   logLevel: "debug" | "info" | "warn" | "error";
 }
@@ -78,10 +87,14 @@ export const defaultConfig: AgentConfig = {
     mode: "hybrid",
     llm: {
       provider: "anthropic",
-      model: "claude-sonnet-4-20250514",
-      maxTokens: 4096,
+      model: "claude-opus-4-8",
+      maxTokens: 16000,
       inputCostPerMillionTokens: 0,
       outputCostPerMillionTokens: 0,
+      thinking: {
+        type: "adaptive",
+        effort: "high",
+      },
     },
   },
   budget: {
@@ -98,6 +111,10 @@ export const defaultConfig: AgentConfig = {
   autoCompileWiki: true,
   autoLearnWiki: false,
   wikiSearchResultLimit: 3,
+  wikiLlm: {
+    approved: false,
+    maxTokensPerSync: 12000,
+  },
   maxIterations: 10,
   logLevel: "info",
 };

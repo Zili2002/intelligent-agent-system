@@ -46,7 +46,7 @@ export async function loadConfig(
       /\u001B\[[0-?]*[ -/]*[@-~]/g,
       "",
     )
-      .replace(/\[[0-9;]*m$/g, "")
+      .replace(/\[[0-9;]*m\]?/g, "")
       .trim();
   }
 
@@ -83,6 +83,16 @@ export function validateConfig(config: AgentConfig): void {
     config.wikiSearchResultLimit > 100
   ) {
     throw new Error("wikiSearchResultLimit must be an integer from 1 to 100");
+  }
+  if (
+    !config.wikiLlm ||
+    typeof config.wikiLlm.approved !== "boolean" ||
+    !Number.isInteger(config.wikiLlm.maxTokensPerSync) ||
+    config.wikiLlm.maxTokensPerSync < 1
+  ) {
+    throw new Error(
+      "wikiLlm must define approved as a boolean and maxTokensPerSync as a positive integer",
+    );
   }
 
   if (
@@ -129,12 +139,32 @@ export function validateConfig(config: AgentConfig): void {
   ) {
     throw new Error("LLM token pricing values cannot be negative");
   }
+  if (
+    config.analysis.llm &&
+    config.analysis.llm.thinking.type !== "disabled" &&
+    config.analysis.llm.thinking.type !== "adaptive"
+  ) {
+    throw new Error(
+      'analysis.llm.thinking.type must be "disabled" or "adaptive"',
+    );
+  }
+  if (
+    config.analysis.llm &&
+    !["low", "medium", "high", "xhigh", "max"].includes(
+      config.analysis.llm.thinking.effort,
+    )
+  ) {
+    throw new Error(
+      "analysis.llm.thinking.effort must be low, medium, high, xhigh, or max",
+    );
+  }
 }
 
 function mergeConfig(
   defaults: AgentConfig,
   user: Partial<AgentConfig>,
 ): AgentConfig {
+  const defaultLlm = defaults.analysis.llm;
   return {
     sandbox: {
       ...defaults.sandbox,
@@ -150,7 +180,16 @@ function mergeConfig(
       ...defaults.analysis,
       ...user.analysis,
       llm: user.analysis?.llm
-        ? { ...defaults.analysis.llm, ...user.analysis.llm }
+        ? {
+            ...defaultLlm!,
+            ...user.analysis.llm,
+            thinking: user.analysis.llm.thinking
+              ? {
+                  ...defaultLlm!.thinking,
+                  ...user.analysis.llm.thinking,
+                }
+              : defaultLlm!.thinking,
+          }
         : defaults.analysis.llm,
     },
     budget: {
@@ -168,6 +207,9 @@ function mergeConfig(
     autoLearnWiki: user.autoLearnWiki ?? defaults.autoLearnWiki,
     wikiSearchResultLimit:
       user.wikiSearchResultLimit ?? defaults.wikiSearchResultLimit,
+    wikiLlm: user.wikiLlm
+      ? { ...defaults.wikiLlm, ...user.wikiLlm }
+      : defaults.wikiLlm,
     maxIterations: user.maxIterations ?? defaults.maxIterations,
     logLevel: user.logLevel || defaults.logLevel,
   };

@@ -1,17 +1,18 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createServer } from "node:http";
 import test from "node:test";
 import {
   initWiki,
-  queryWiki,
+  type LlmProvider,
 } from "@intelligent-agent-system/llm-wiki-compiler";
 import {
   resumeExperiment,
   runExplorationCycle,
 } from "../src/exploration/cycle.js";
+import { analyzeExperiment } from "../src/exploration/analyze.js";
 import {
   experimentDirectory,
   saveExperiment,
@@ -21,6 +22,7 @@ import {
   backupMissionState,
   loadMission,
   loadMissionForExecution,
+  loadMissionStateIfExists,
   resumeMissionState,
   saveMissionState,
   updateMetric,
@@ -710,7 +712,46 @@ test("experiment storage rejects path traversal identifiers", () => {
   );
 });
 
-test("verified experiment evidence compiles into the companion wiki", async () => {
+test("experiment analysis ignores array-shaped metric updates", () => {
+  const experiment: Experiment = {
+    id: "exp-metric-shape",
+    missionId: "mission-metric-shape",
+    hypothesis: {
+      id: "hyp-metric-shape",
+      statement: "Metric updates use an object",
+      rationale: "Array indices are not metric names",
+      expectedOutcome: "Malformed updates are ignored",
+      confidence: 1,
+      relatedKnowledge: [],
+    },
+    status: "completed",
+    design: {
+      description: "Validate metric update shape",
+      steps: [],
+      expectedDuration: "< 1 minute",
+      resourceEstimate: { cpu: 1, memory: "64MB", disk: "1MB" },
+    },
+    createdAt: "2026-01-01T00:00:00.000Z",
+  };
+  const malformed = JSON.parse(
+    '{"status":"completed","findings":["done"],"metricUpdates":[{"name":"Experiments completed","value":1}]}',
+  );
+  const analysis = analyzeExperiment(
+    experiment,
+    {
+      success: true,
+      exitCode: 0,
+      stdout: "",
+      stderr: "",
+      duration: 0.1,
+      resourceUsage: { cpuTime: 0, memoryPeak: "0MB", diskUsed: "0MB" },
+    },
+    malformed,
+  );
+  assert.deepEqual(analysis.metricUpdates, {});
+});
+
+test("experiment approval does not implicitly approve Wiki LLM calls", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-wiki-"));
   try {
     const wikiRoot = path.join(root, "wiki-repository");
@@ -739,31 +780,138 @@ Preserve verified experiment evidence.
       root,
       approve: true,
     });
-    const sync = await syncExperimentToWiki(
+    await assert.rejects(
+      () =>
+        syncExperimentToWiki(
+          mission,
+          cycle.experiment!,
+          cycle.reflection!,
+          config,
+          root,
+        ),
+      /separate Wiki LLM approval/,
+    );
+    cycle.experiment!.design.code = `${cycle.experiment!.design.code ?? ""}\n// AgentSimulator Math.random`;
+
+    const wikiLlm: LlmProvider = {
+      name: "agent-test",
+      async complete(request) {
+        if (request.purpose === "source-analysis") {
+          const content = request.prompt.slice(
+            request.prompt.indexOf("\n\n") + 2,
+          );
+          const quote = `${content.split(".")[0]?.trim()}.`;
+          return {
+            text: JSON.stringify({
+              relevant: true,
+              exclusionReason: "in scope",
+              summary: quote,
+              concepts: [
+                {
+                  id: "experiment-evidence",
+                  title: "Experiment evidence",
+                  definition: quote,
+                  claimIds: ["c1"],
+                },
+              ],
+              claims: [{ id: "c1", text: quote, quote }],
+            }),
+            usage: { inputTokens: 10, outputTokens: 5 },
+          };
+        }
+        if (request.purpose === "synthesis") {
+          const analyses = JSON.parse(
+            request.prompt.slice(request.prompt.lastIndexOf("\n") + 1),
+          ) as Array<{
+            sourceId: string;
+            claims: Array<{ text: string; quote: string }>;
+          }>;
+          const source = analyses[0]!;
+          const claimId = `${source.sourceId}:c1`;
+          return {
+            text: JSON.stringify({
+              concepts: [
+                {
+                  id: "experiment-evidence",
+                  title: "Experiment evidence",
+                  definition: source.claims[0]!.text,
+                  claimIds: [claimId],
+                },
+              ],
+              claims: [
+                {
+                  id: claimId,
+                  sourceId: source.sourceId,
+                  text: source.claims[0]!.text,
+                  quote: source.claims[0]!.quote,
+                  conceptIds: ["experiment-evidence"],
+                },
+              ],
+              contradictions: [],
+              gaps: [],
+            }),
+            usage: { inputTokens: 10, outputTokens: 5 },
+          };
+        }
+        if (request.purpose === "reflection") {
+          const sourceId = request.prompt.match(
+            /"sources":\s*\[\s*\{\s*"id":\s*"(s\d+)"/,
+          )?.[1];
+          const claimId = request.prompt.match(
+            /"claims":\s*\[\s*\{\s*"id":\s*"(c\d+)"/,
+          )?.[1];
+          return {
+            text: JSON.stringify({
+              observations: [
+                {
+                  text: "Experiment evidence was compiled.",
+                  sourceIds: sourceId ? [sourceId] : [],
+                  claimIds: claimId ? [claimId] : [],
+                },
+              ],
+              gaps: [],
+            }),
+            usage: { inputTokens: 10, outputTokens: 5 },
+          };
+        }
+        if (request.purpose === "topic-synthesis") {
+          return {
+            text: JSON.stringify({
+              overview: "Experiment topic evidence.",
+              conceptLabels: ["Experiment"],
+              summaryClaimIds: [],
+            }),
+            usage: { inputTokens: 10, outputTokens: 5 },
+          };
+        }
+        if (request.purpose === "relationship-analysis") {
+          return {
+            text: JSON.stringify({ edges: [] }),
+            usage: { inputTokens: 10, outputTokens: 5 },
+          };
+        }
+        throw new Error(`Unexpected Wiki LLM purpose: ${request.purpose}`);
+      },
+    };
+    config.wikiLlm = { approved: true, maxTokensPerSync: 8000 };
+    const tokensBefore = mission.budget.llmTokensUsed;
+    await syncExperimentToWiki(
       mission,
       cycle.experiment!,
       cycle.reflection!,
       config,
       root,
+      wikiLlm,
     );
-
-    assert.equal(sync?.status.sourceArtifacts, 1);
-    assert.match(
-      sync?.ingestion.artifact.content ?? "",
-      /operations_per_second/,
+    assert.ok(mission.budget.llmTokensUsed - tokensBefore >= 30);
+    const persisted = await loadMissionStateIfExists(mission.id, root);
+    assert.equal(persisted?.budget.llmTokensUsed, mission.budget.llmTokensUsed);
+    const sourceFiles = await readdir(path.join(wikiRoot, "sources"));
+    const experimentSource = JSON.parse(
+      await readFile(path.join(wikiRoot, "sources", sourceFiles[0]!), "utf8"),
     );
-    const query = await queryWiki("deterministic local execution baseline", {
-      root: wikiRoot,
-    });
-    assert.ok(query.matches.length > 0);
-    assert.match(query.answer, /deterministic local execution baseline/i);
-    assert.ok(
-      query.matches.some(
-        (match) =>
-          match.path.startsWith("sources/") ||
-          match.path.startsWith("wiki/sources/"),
-      ),
-    );
+    assert.match(experimentSource.content, /synthetic simulation/);
+    assert.match(experimentSource.content, /must not be generalized/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
