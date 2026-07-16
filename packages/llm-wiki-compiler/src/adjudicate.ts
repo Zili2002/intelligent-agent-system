@@ -15,9 +15,9 @@ import type {
   ContradictionResolution,
   ServiceOptions,
 } from "./types.js";
-import { readTextIfExists, sha256, writeText } from "./utils.js";
+import { mapConcurrent, readTextIfExists, sha256, writeText } from "./utils.js";
 
-const ADJUDICATION_VERSION = 1;
+const ADJUDICATION_VERSION = 2;
 const RESOLUTIONS = new Set<ContradictionResolution>([
   "unresolved",
   "context-dependent",
@@ -249,107 +249,124 @@ export async function adjudicateWiki(
   const scores = new Map(
     (scoreData.sources as SourceScore[]).map((item) => [item.sourceId, item]),
   );
-  const adjudications: ContradictionAdjudication[] = [];
-  for (let index = 0; index < contradictions.length; index += 12) {
-    const batch = contradictions.slice(index, index + 12);
-    const expected = batch.map((edge) => {
-      const related = edges
-        .filter(
-          (candidate) =>
-            candidate.type !== "contradicts" &&
-            [candidate.from, candidate.to].some(
-              (id) => id === edge.from || id === edge.to,
-            ),
-        )
-        .flatMap((candidate) => [candidate.from, candidate.to])
-        .filter((id) => id !== edge.from && id !== edge.to)
-        .slice(0, 6);
-      return {
-        from: edge.from,
-        to: edge.to,
-        allowedClaims: new Set([edge.from, edge.to, ...related]),
+  const batches = Array.from(
+    { length: Math.ceil(contradictions.length / 12) },
+    (_, index) => contradictions.slice(index * 12, (index + 1) * 12),
+  );
+  const batchResults = await mapConcurrent(
+    batches,
+    config.llm.adjudicationConcurrency,
+    async (batch) => {
+      const expected = batch.map((edge) => {
+        const related = edges
+          .filter(
+            (candidate) =>
+              candidate.type !== "contradicts" &&
+              [candidate.from, candidate.to].some(
+                (id) => id === edge.from || id === edge.to,
+              ),
+          )
+          .flatMap((candidate) => [candidate.from, candidate.to])
+          .filter((id) => id !== edge.from && id !== edge.to)
+          .slice(0, 6);
+        return {
+          from: edge.from,
+          to: edge.to,
+          allowedClaims: new Set([edge.from, edge.to, ...related]),
+        };
+      });
+      const batchAllowedClaims = new Set(
+        expected.flatMap((item) => [...item.allowedClaims]),
+      );
+      for (const item of expected) item.allowedClaims = batchAllowedClaims;
+      const claimsInput = [...batchAllowedClaims].map((id) => {
+        const claim = byClaim.get(id);
+        if (!claim)
+          throw new Error(`Claim graph references unknown Claim ${id}`);
+        const claimConfidence = confidence.get(id);
+        return {
+          id,
+          statement: claim.statement,
+          quote: claim.quote,
+          sourceId: claim.sourceId,
+          sourceScore: scores.get(claim.sourceId)?.score ?? 0,
+          confidence: claimConfidence?.confidence ?? 0,
+          evidenceStatus: claimConfidence?.evidenceStatus ?? "insufficient",
+        };
+      });
+      const contradictionsFor = (
+        entries: Array<{
+          from: string;
+          to: string;
+          allowedClaims: Set<string>;
+        }>,
+      ) =>
+        entries.map((item) => ({
+          from: item.from,
+          to: item.to,
+          relationshipExplanation: batch.find(
+            (edge) => edge.from === item.from && edge.to === item.to,
+          )!.explanation,
+        }));
+      const input = {
+        claims: claimsInput,
+        contradictions: contradictionsFor(expected),
       };
-    });
-    const batchAllowedClaims = new Set(
-      expected.flatMap((item) => [...item.allowedClaims]),
-    );
-    for (const item of expected) item.allowedClaims = batchAllowedClaims;
-    const inputFor = (
-      entries: Array<{ from: string; to: string; allowedClaims: Set<string> }>,
-    ) =>
-      entries.map((item) => ({
-        from: item.from,
-        to: item.to,
-        relationshipExplanation: batch.find(
-          (edge) => edge.from === item.from && edge.to === item.to,
-        )!.explanation,
-        claims: [...item.allowedClaims].map((id) => {
-          const claim = byClaim.get(id);
-          if (!claim)
-            throw new Error(`Claim graph references unknown Claim ${id}`);
-          const claimConfidence = confidence.get(id);
-          return {
-            id,
-            statement: claim.statement,
-            quote: claim.quote,
-            sourceId: claim.sourceId,
-            sourceScore: scores.get(claim.sourceId)?.score ?? 0,
-            confidence: claimConfidence?.confidence ?? 0,
-            evidenceStatus: claimConfidence?.evidenceStatus ?? "insufficient",
-          };
+      const cacheKey = sha256(
+        JSON.stringify({
+          version: ADJUDICATION_VERSION,
+          model,
+          focus: config.researchFocus,
+          input,
         }),
-      }));
-    const input = inputFor(expected);
-    const cacheKey = sha256(
-      JSON.stringify({
-        version: ADJUDICATION_VERSION,
-        model,
-        focus: config.researchFocus,
-        input,
-      }),
-    );
-    const cache = path.join(
-      config.metaDir,
-      "contradiction-adjudication",
-      `${cacheKey}.json`,
-    );
-    const cached = await readTextIfExists(cache);
-    let batchResult: ContradictionAdjudication[];
-    if (cached) {
-      batchResult = validateAdjudications(JSON.parse(cached), expected);
-    } else {
-      batchResult = [];
-      let pending = expected;
-      while (pending.length) {
-        const pendingInput = inputFor(pending);
-        const partial = await requestJson(
-          provider,
-          {
-            purpose: "contradiction-adjudication",
-            maxTokens: Math.min(config.llm.synthesisOutputTokens, 8_000),
-            prompt: `Adjudicate each supplied contradiction for "${config.researchFocus}" using only supplied immutable claims and quality signals. Return JSON {adjudications:[{from,to,resolution,rationale,evidenceClaimIds,evidenceNeeds}]}. resolution must be unresolved, context-dependent, evidence-favors-from, evidence-favors-to, or insufficient-evidence. Do not infer truth from citation counts or confidence alone. Use context-dependent only when scope or conditions reconcile the claims. evidenceClaimIds may contain only supplied claim IDs. Return every pair exactly once.\n${JSON.stringify(pendingInput)}`,
-          },
-          (value) => validateAdjudications(value, pending, false),
-          tracker,
-        );
-        batchResult.push(...partial);
-        const returned = new Set(
-          partial.map((item) => edgeKey(item.from, item.to)),
-        );
-        pending = pending.filter(
-          (item) => !returned.has(edgeKey(item.from, item.to)),
+      );
+      const cache = path.join(
+        config.metaDir,
+        "contradiction-adjudication",
+        `${cacheKey}.json`,
+      );
+      const cached = await readTextIfExists(cache);
+      let batchResult: ContradictionAdjudication[];
+      if (cached) {
+        batchResult = validateAdjudications(JSON.parse(cached), expected);
+      } else {
+        batchResult = [];
+        let pending = expected;
+        while (pending.length) {
+          const pendingInput = {
+            claims: claimsInput,
+            contradictions: contradictionsFor(pending),
+          };
+          const partial = await requestJson(
+            provider,
+            {
+              purpose: "contradiction-adjudication",
+              maxTokens: Math.min(config.llm.synthesisOutputTokens, 8_000),
+              prompt: `Adjudicate each supplied contradiction for "${config.researchFocus}" using only the top-level immutable claims dictionary and quality signals. Return JSON {adjudications:[{from,to,resolution,rationale,evidenceClaimIds,evidenceNeeds}]}. resolution must be unresolved, context-dependent, evidence-favors-from, evidence-favors-to, or insufficient-evidence. Do not infer truth from citation counts or confidence alone. Use context-dependent only when scope or conditions reconcile the claims. evidenceClaimIds may contain only IDs from claims. Return every contradiction pair exactly once.\n${JSON.stringify(pendingInput)}`,
+            },
+            (value) => validateAdjudications(value, pending, false),
+            tracker,
+          );
+          batchResult.push(...partial);
+          const returned = new Set(
+            partial.map((item) => edgeKey(item.from, item.to)),
+          );
+          pending = pending.filter(
+            (item) => !returned.has(edgeKey(item.from, item.to)),
+          );
+        }
+        validateAdjudications({ adjudications: batchResult }, expected);
+      }
+      if (!cached) {
+        await writeText(
+          cache,
+          JSON.stringify({ adjudications: batchResult }, null, 2),
         );
       }
-      validateAdjudications({ adjudications: batchResult }, expected);
-    }
-    if (!cached) {
-      await writeText(
-        cache,
-        JSON.stringify({ adjudications: batchResult }, null, 2),
-      );
-    }
-    adjudications.push(...batchResult);
-  }
+      return batchResult;
+    },
+  );
+  const adjudications = batchResults.flat();
   await writeText(
     artifactPath,
     JSON.stringify(

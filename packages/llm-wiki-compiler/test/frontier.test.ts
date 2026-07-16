@@ -8,8 +8,11 @@ import {
   completeEvidenceClue,
   getEvidenceFrontierStatus,
   initWiki,
+  runEvidenceFrontier,
   selectEvidenceClues,
   type EmbeddingProvider,
+  type LlmProvider,
+  type SearchProvider,
 } from "../src/index.js";
 
 const roots: string[] = [];
@@ -33,6 +36,7 @@ async function workspace(
     noNoveltyCooldownHours: number;
     maxTerminalFrontierItems: number;
     maxFrontierHistoryItems: number;
+    frontierConcurrency: number;
     refreshIntervalHours: number;
   }> = {},
 ): Promise<string> {
@@ -462,4 +466,55 @@ test("Evidence Frontier compacts terminal history and serializes concurrent admi
   assert.equal(compacted.resolved, 2);
   assert.ok(compacted.historyItems >= 8);
   assert.equal(compacted.compactedTotal, 8);
+});
+
+test("Evidence Frontier executes independent clues with bounded concurrency", async () => {
+  const root = await workspace({
+    frontierConcurrency: 2,
+    maxQueriesPerCycle: 2,
+  });
+  await admitEvidenceClues(
+    [
+      {
+        query: "parallel clue one",
+        targetId: "one",
+        kind: "manual",
+        priority: 50,
+      },
+      {
+        query: "parallel clue two",
+        targetId: "two",
+        kind: "manual",
+        priority: 50,
+      },
+    ],
+    { root },
+  );
+  let active = 0;
+  let maximumActive = 0;
+  const provider: SearchProvider = {
+    name: "parallel-search",
+    async search() {
+      active++;
+      maximumActive = Math.max(maximumActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      active--;
+      return [];
+    },
+  };
+  const llmProvider: LlmProvider = {
+    name: "unused",
+    async complete() {
+      throw new Error("No result should require screening");
+    },
+  };
+  const result = await runEvidenceFrontier({
+    root,
+    clueLimit: 2,
+    provider,
+    llmProvider,
+    maxLlmTokens: 10_000,
+  });
+  assert.equal(result.searches.length, 2);
+  assert.equal(maximumActive, 2);
 });

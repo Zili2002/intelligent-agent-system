@@ -14,9 +14,20 @@ import {
   writeQualityPages,
   type ClaimConfidence,
 } from "./quality.js";
-import type { CompileResult, ServiceOptions, SourceArtifact } from "./types.js";
+import {
+  configuredEmbeddingProvider,
+  loadSemanticIndex,
+  semanticSimilarity,
+} from "./semantic-index.js";
+import type {
+  CompileResult,
+  EmbeddingProvider,
+  ServiceOptions,
+  SourceArtifact,
+} from "./types.js";
 import {
   generatedDocument,
+  mapConcurrent,
   readTextIfExists,
   relativePosix,
   sha256,
@@ -28,7 +39,7 @@ import {
 const SOURCE_PROMPT_VERSION = "knowledge-v4-chunks";
 const SYNTHESIS_PROMPT_VERSION = "synthesis-v4-compact-sampling";
 const TOPIC_PROMPT_VERSION = "topic-v1-evidence-immutable";
-const RELATIONSHIP_PROMPT_VERSION = "relationships-v2-ranked-opposition";
+const RELATIONSHIP_PROMPT_VERSION = "relationships-v3-short-explanations";
 
 interface AnalysisClaim {
   id: string;
@@ -143,9 +154,17 @@ export function chunkSource(
     chunkInputChars: number;
     chunkOverlapChars: number;
     maxChunksPerSource: number;
+    adaptiveChunkThresholdChars?: number;
+    adaptiveChunkInputChars?: number;
   },
 ): SourceChunk[] {
-  const { chunkInputChars: limit, chunkOverlapChars: overlap } = config;
+  const limit =
+    config.adaptiveChunkThresholdChars !== undefined &&
+    config.adaptiveChunkInputChars !== undefined &&
+    source.content.length >= config.adaptiveChunkThresholdChars
+      ? config.adaptiveChunkInputChars
+      : config.chunkInputChars;
+  const overlap = config.chunkOverlapChars;
   const boundaries = new Set<number>([0, source.content.length]);
   for (const match of source.content.matchAll(/\n\n+/g))
     boundaries.add((match.index ?? 0) + match[0].length);
@@ -841,14 +860,92 @@ function relationshipWords(claim: RegistryEntry): Set<string> {
   );
 }
 
+function relationshipPairKey(from: string, to: string): string {
+  return [from, to].sort().join("\u0000");
+}
+
+async function incrementalRelationshipSemanticScores(
+  claims: RegistryEntry[],
+  newClaimIds: Set<string>,
+  config: Awaited<ReturnType<typeof loadConfig>>,
+  embeddingProvider?: EmbeddingProvider,
+): Promise<Map<string, number>> {
+  if (!newClaimIds.size) return new Map();
+  const index = await loadSemanticIndex(config.metaDir);
+  if (!index) return new Map();
+  const provider = embeddingProvider ?? configuredEmbeddingProvider(config);
+  if (
+    provider.model !== index.model ||
+    (provider.configurationId ?? provider.model) !==
+      (index.configurationId ?? index.model)
+  ) {
+    return new Map();
+  }
+  const newClaims = claims.filter((claim) => newClaimIds.has(claim.id));
+  const vectors: number[][] = [];
+  for (
+    let offset = 0;
+    offset < newClaims.length;
+    offset += config.retrieval.embeddingBatchSize
+  ) {
+    vectors.push(
+      ...(await provider.embed(
+        newClaims
+          .slice(offset, offset + config.retrieval.embeddingBatchSize)
+          .map(
+            (claim) =>
+              `${claim.statement}\n${claim.quote}\n${claim.topicIds.join(" ")}`,
+          ),
+        "passage",
+      )),
+    );
+  }
+  const newVectors = new Map(
+    newClaims.map((claim, index) => [claim.id, vectors[index]!]),
+  );
+  const indexedVectors = new Map(
+    index.claims.map((entry) => [entry.claimId, entry.vector]),
+  );
+  const scores = new Map<string, number>();
+  for (const claim of newClaims) {
+    const vector = newVectors.get(claim.id)!;
+    for (const other of claims) {
+      if (other.id === claim.id) continue;
+      const key = relationshipPairKey(claim.id, other.id);
+      if (scores.has(key)) continue;
+      const otherNew = newVectors.get(other.id);
+      const score = otherNew
+        ? vector.reduce(
+            (total, value, index) => total + value * (otherNew[index] ?? 0),
+            0,
+          )
+        : indexedVectors.has(other.id)
+          ? semanticSimilarity(vector, indexedVectors.get(other.id)!)
+          : 0;
+      scores.set(key, Math.max(0, score));
+    }
+  }
+  return scores;
+}
+
 function relationshipCandidates(
   claims: RegistryEntry[],
   maximum: number,
+  requiredClaimIds?: Set<string>,
+  semanticScores: Map<string, number> = new Map(),
+  perClaim = 8,
+  oppositionPerClaim = 4,
 ): Array<{ from: string; to: string }> {
+  if (requiredClaimIds !== undefined && requiredClaimIds.size === 0) return [];
   const words = new Map(
     claims.map((claim) => [claim.id, relationshipWords(claim)]),
   );
-  const candidates: Array<{ from: string; to: string; score: number }> = [];
+  const candidates: Array<{
+    from: string;
+    to: string;
+    score: number;
+    opposition: boolean;
+  }> = [];
   const oppositions = [
     ["increase", "decrease"],
     ["higher", "lower"],
@@ -863,6 +960,13 @@ function relationshipCandidates(
     for (let right = left + 1; right < claims.length; right++) {
       const a = claims[left]!;
       const b = claims[right]!;
+      if (
+        requiredClaimIds &&
+        !requiredClaimIds.has(a.id) &&
+        !requiredClaimIds.has(b.id)
+      ) {
+        continue;
+      }
       const sharedTopic = a.topicIds.some((id) => b.topicIds.includes(id));
       const aWords = words.get(a.id)!;
       const bWords = words.get(b.id)!;
@@ -877,7 +981,14 @@ function relationshipCandidates(
           (aText.includes(positive) && bText.includes(negative)) ||
           (aText.includes(negative) && bText.includes(positive)),
       );
-      if (sharedTopic || overlap >= 2 || negation || opposition) {
+      const semantic = semanticScores.get(relationshipPairKey(a.id, b.id)) ?? 0;
+      if (
+        sharedTopic ||
+        overlap >= 2 ||
+        negation ||
+        opposition ||
+        semantic >= 0.45
+      ) {
         candidates.push({
           from: a.id,
           to: b.id,
@@ -886,12 +997,44 @@ function relationshipCandidates(
             (negation ? 10 : 0) +
             Math.min(overlap, 6) * 2 +
             (sharedTopic ? 3 : 0) +
-            (a.sourceId !== b.sourceId ? 2 : 0),
+            (a.sourceId !== b.sourceId ? 2 : 0) +
+            Math.round(semantic * 10),
+          opposition: opposition || negation,
         });
       }
     }
   }
-  return candidates
+  const ranked = candidates.sort(
+    (a, b) =>
+      b.score - a.score ||
+      `${a.from}:${a.to}`.localeCompare(`${b.from}:${b.to}`),
+  );
+  if (!requiredClaimIds) {
+    return ranked.slice(0, maximum).map(({ from, to }) => ({ from, to }));
+  }
+  const selected = new Map<string, (typeof ranked)[number]>();
+  for (const claimId of requiredClaimIds) {
+    const involving = ranked.filter(
+      (candidate) => candidate.from === claimId || candidate.to === claimId,
+    );
+    for (const candidate of involving
+      .filter((item) => item.opposition)
+      .slice(0, oppositionPerClaim)) {
+      selected.set(
+        relationshipPairKey(candidate.from, candidate.to),
+        candidate,
+      );
+    }
+    for (const candidate of involving
+      .filter((item) => !item.opposition)
+      .slice(0, perClaim)) {
+      selected.set(
+        relationshipPairKey(candidate.from, candidate.to),
+        candidate,
+      );
+    }
+  }
+  return [...selected.values()]
     .sort(
       (a, b) =>
         b.score - a.score ||
@@ -899,6 +1042,53 @@ function relationshipCandidates(
     )
     .slice(0, maximum)
     .map(({ from, to }) => ({ from, to }));
+}
+
+async function previousClaimRelationships(
+  metaDir: string,
+  claims: RegistryEntry[],
+): Promise<{ claimIds: Set<string>; edges: ClaimRelationship[] }> {
+  const content = await readTextIfExists(
+    path.join(metaDir, "claim_graph.json"),
+  );
+  if (!content) return { claimIds: new Set(), edges: [] };
+  const data = object(JSON.parse(content), "previous Claim graph");
+  const currentClaimIds = new Set(claims.map((claim) => claim.id));
+  const claimIds = new Set(
+    Array.isArray(data.nodes)
+      ? data.nodes
+          .map((item, index) => {
+            const node = object(item, `previous Claim graph nodes[${index}]`);
+            return typeof node.id === "string" ? node.id : undefined;
+          })
+          .filter(
+            (id): id is string =>
+              typeof id === "string" && currentClaimIds.has(id),
+          )
+      : [],
+  );
+  const rawEdges = Array.isArray(data.edges)
+    ? data.edges.filter((item) => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) {
+          throw new Error("previous Claim graph edge must be an object");
+        }
+        const edge = item as Record<string, unknown>;
+        return (
+          typeof edge.from === "string" &&
+          typeof edge.to === "string" &&
+          currentClaimIds.has(edge.from) &&
+          currentClaimIds.has(edge.to)
+        );
+      })
+    : [];
+  const candidates = rawEdges.map((item) => {
+    const edge = item as Record<string, unknown>;
+    return { from: edge.from as string, to: edge.to as string };
+  });
+  return {
+    claimIds,
+    edges: relationshipsResult({ edges: rawEdges }, candidates),
+  };
 }
 
 async function targetedRelationshipCandidates(
@@ -1041,7 +1231,7 @@ async function synthesizeTopics(
   provider: ReturnType<typeof requireLlm>,
   usage: LlmUsageTracker,
 ): Promise<RegistryTopic[]> {
-  for (const topic of topics) {
+  return mapConcurrent(topics, config.llm.topicConcurrency, async (topic) => {
     const entries = topic.claimIds
       .map((id) => claimsById.get(id)!)
       .sort((a, b) => a.id.localeCompare(b.id))
@@ -1092,8 +1282,7 @@ async function synthesizeTopics(
           if (recovered) {
             value = recovered;
             await writeText(cache, JSON.stringify(value, null, 2));
-            Object.assign(topic, value);
-            continue;
+            return Object.assign(topic, value);
           }
         }
         if (
@@ -1111,9 +1300,8 @@ async function synthesizeTopics(
       }
     }
     if (!cached) await writeText(cache, JSON.stringify(value, null, 2));
-    Object.assign(topic, value);
-  }
-  return topics;
+    return Object.assign(topic, value);
+  });
 }
 
 function relationshipsResult(
@@ -1142,11 +1330,7 @@ function relationshipsResult(
       )
     )
       throw new Error("relationship edge type is invalid");
-    if (
-      typeof edge.explanation !== "string" ||
-      !edge.explanation.trim() ||
-      edge.explanation.length > 2_000
-    )
+    if (typeof edge.explanation !== "string" || !edge.explanation.trim())
       throw new Error("relationship explanation is invalid");
     const [from, to] = [edge.from, edge.to].sort() as [string, string];
     if (!allowable.has(`${from}\u0000${to}`)) continue;
@@ -1154,7 +1338,7 @@ function relationshipsResult(
       from,
       to,
       type: edge.type as ClaimRelationship["type"],
-      explanation: edge.explanation.trim(),
+      explanation: edge.explanation.trim().split(/\s+/).slice(0, 30).join(" "),
     };
     const key = `${from}\u0000${to}\u0000${normalized.type}`;
     if (!output.has(key)) output.set(key, normalized);
@@ -1204,10 +1388,29 @@ async function analyzeRelationships(
   provider: ReturnType<typeof requireLlm>,
   usage: LlmUsageTracker,
   targetedCandidates: Array<{ from: string; to: string }> = [],
+  embeddingProvider?: EmbeddingProvider,
 ): Promise<ClaimRelationship[]> {
+  const previous = await previousClaimRelationships(config.metaDir, claims);
+  const newClaimIds = new Set(
+    claims
+      .filter((claim) => !previous.claimIds.has(claim.id))
+      .map((claim) => claim.id),
+  );
+  const semanticScores = previous.claimIds.size
+    ? await incrementalRelationshipSemanticScores(
+        claims,
+        newClaimIds,
+        config,
+        embeddingProvider,
+      )
+    : new Map<string, number>();
   const candidates = relationshipCandidates(
     claims,
     config.llm.maxRelationshipCandidates,
+    previous.claimIds.size ? newClaimIds : undefined,
+    semanticScores,
+    config.llm.relationshipCandidatesPerClaim,
+    config.llm.relationshipOppositionCandidatesPerClaim,
   );
   const seen = new Set(
     candidates.map((edge) => [edge.from, edge.to].sort().join("\u0000")),
@@ -1218,95 +1421,104 @@ async function analyzeRelationships(
     candidates.push(edge);
     seen.add(key);
   }
-  const relationships: ClaimRelationship[] = [];
-  for (
-    let index = 0;
-    index < candidates.length;
-    index += config.llm.relationshipBatchSize
-  ) {
-    const batch = candidates.slice(
-      index,
-      index + config.llm.relationshipBatchSize,
-    );
-    const byId = new Map(claims.map((claim) => [claim.id, claim]));
-    const input = batch.map((pair) => ({
-      ...pair,
-      fromClaim: {
-        statement: byId.get(pair.from)!.statement,
-        quote: byId.get(pair.from)!.quote,
-        topicIds: byId.get(pair.from)!.topicIds,
-      },
-      toClaim: {
-        statement: byId.get(pair.to)!.statement,
-        quote: byId.get(pair.to)!.quote,
-        topicIds: byId.get(pair.to)!.topicIds,
-      },
-    }));
-    const key = sha256(
-      JSON.stringify({
-        version: RELATIONSHIP_PROMPT_VERSION,
-        model,
-        focus: config.researchFocus,
-        batch: input,
-      }),
-    );
-    const cache = path.join(
-      config.metaDir,
-      "relationship-analysis",
-      `${key}.json`,
-    );
-    const cached = await readTextIfExists(cache);
-    const prompt = `Classify only the supplied candidate claim pairs for "${config.researchFocus}". Return JSON {edges:[{from,to,type,explanation}]}. type is supports, contradicts, qualifies, or duplicate. Use contradicts when claims report opposing outcomes, trends, capabilities, or conclusions under comparable scope; use qualifies when scope or conditions explain the difference. Use only supplied IDs, no self edges; explain from immutable evidence.\n${JSON.stringify(input)}`;
-    let edges;
-    if (cached) {
-      edges = relationshipsResult(JSON.parse(cached), batch);
-    } else {
-      const requestRelationships = (requestPrompt: string) =>
-        requestJson(
-          provider,
-          {
-            purpose: "relationship-analysis",
-            maxTokens: Math.min(config.llm.synthesisOutputTokens, 6_000),
-            prompt: requestPrompt,
-          },
-          (response) => relationshipsResult(response, batch),
-          usage,
-        );
-      try {
-        edges = await requestRelationships(prompt);
-      } catch (error) {
-        if (
-          error instanceof WikiLlmResponseError &&
-          error.stopReason === "max_tokens" &&
-          error.responseText
-        ) {
-          const recovered = recoverTruncatedRelationships(error.responseText);
-          if (recovered !== undefined) {
-            edges = relationshipsResult(recovered, batch);
-            if (!cached)
-              await writeText(cache, JSON.stringify({ edges }, null, 2));
-            relationships.push(...edges);
-            continue;
+  const batches = Array.from(
+    {
+      length: Math.ceil(candidates.length / config.llm.relationshipBatchSize),
+    },
+    (_, index) =>
+      candidates.slice(
+        index * config.llm.relationshipBatchSize,
+        (index + 1) * config.llm.relationshipBatchSize,
+      ),
+  );
+  const batchResults = await mapConcurrent(
+    batches,
+    config.llm.relationshipConcurrency,
+    async (batch) => {
+      const byId = new Map(claims.map((claim) => [claim.id, claim]));
+      const input = batch.map((pair) => ({
+        ...pair,
+        fromClaim: {
+          statement: byId.get(pair.from)!.statement,
+          quote: byId.get(pair.from)!.quote,
+          topicIds: byId.get(pair.from)!.topicIds,
+        },
+        toClaim: {
+          statement: byId.get(pair.to)!.statement,
+          quote: byId.get(pair.to)!.quote,
+          topicIds: byId.get(pair.to)!.topicIds,
+        },
+      }));
+      const key = sha256(
+        JSON.stringify({
+          version: RELATIONSHIP_PROMPT_VERSION,
+          model,
+          focus: config.researchFocus,
+          batch: input,
+        }),
+      );
+      const cache = path.join(
+        config.metaDir,
+        "relationship-analysis",
+        `${key}.json`,
+      );
+      const cached = await readTextIfExists(cache);
+      const prompt = `Classify only the supplied candidate claim pairs for "${config.researchFocus}". Return JSON {edges:[{from,to,type,explanation}]}. type is supports, contradicts, qualifies, or duplicate. Use contradicts when claims report opposing outcomes, trends, capabilities, or conclusions under comparable scope; use qualifies when scope or conditions explain the difference. Use only supplied IDs, no self edges. Keep each explanation to one sentence and at most 30 words.\n${JSON.stringify(input)}`;
+      let edges: ClaimRelationship[];
+      if (cached) {
+        edges = relationshipsResult(JSON.parse(cached), batch);
+      } else {
+        const requestRelationships = (requestPrompt: string) =>
+          requestJson(
+            provider,
+            {
+              purpose: "relationship-analysis",
+              maxTokens: Math.min(config.llm.synthesisOutputTokens, 6_000),
+              prompt: requestPrompt,
+            },
+            (response) => relationshipsResult(response, batch),
+            usage,
+          );
+        try {
+          edges = await requestRelationships(prompt);
+        } catch (error) {
+          if (
+            error instanceof WikiLlmResponseError &&
+            error.stopReason === "max_tokens" &&
+            error.responseText
+          ) {
+            const recovered = recoverTruncatedRelationships(error.responseText);
+            if (recovered !== undefined) {
+              edges = relationshipsResult(recovered, batch);
+              if (!cached)
+                await writeText(cache, JSON.stringify({ edges }, null, 2));
+              return edges;
+            }
           }
+          if (
+            !(error instanceof WikiLlmResponseError) ||
+            (!error.message.includes("invalid schema") &&
+              !error.message.includes("invalid JSON"))
+          ) {
+            throw error;
+          }
+          edges = await requestRelationships(
+            error.responseText
+              ? `Correct this relationship output to JSON {edges:[{from,to,type,explanation}]}. Allowed pairs: ${batch.map((pair) => `${pair.from}|${pair.to}`).join(", ")}. Types: supports, contradicts, qualifies, duplicate. Each explanation must be at most 30 words. Return JSON only.\nPrevious output:\n${error.responseText}`
+              : `${prompt}\nPrevious output failed validation: ${error.message}. Return corrected JSON only.`,
+          );
         }
-        if (
-          !(error instanceof WikiLlmResponseError) ||
-          (!error.message.includes("invalid schema") &&
-            !error.message.includes("invalid JSON"))
-        ) {
-          throw error;
-        }
-        edges = await requestRelationships(
-          error.responseText
-            ? `Correct this relationship output to JSON {edges:[{from,to,type,explanation}]}. Allowed pairs: ${batch.map((pair) => `${pair.from}|${pair.to}`).join(", ")}. Types: supports, contradicts, qualifies, duplicate. Return JSON only.\nPrevious output:\n${error.responseText}`
-            : `${prompt}\nPrevious output failed validation: ${error.message}. Return corrected JSON only.`,
-        );
       }
-    }
-    if (!cached) await writeText(cache, JSON.stringify({ edges }, null, 2));
-    relationships.push(...edges);
-  }
-  return relationshipsResult({ edges: relationships }, candidates);
+      if (!cached) await writeText(cache, JSON.stringify({ edges }, null, 2));
+      return edges;
+    },
+  );
+  const relationships = batchResults.flat();
+  const merged = [...previous.edges, ...relationships];
+  return relationshipsResult(
+    { edges: merged },
+    merged.map((edge) => ({ from: edge.from, to: edge.to })),
+  );
 }
 
 async function mergeDurableTargetedRelationships(
@@ -1466,13 +1678,26 @@ function mergeChunkAnalyses(
 function projectSingleRelevantSource(
   sourceList: SourceArtifact[],
   analyses: Map<string, SourceAnalysis>,
+  summaryClaimLimit: number,
 ): Synthesis {
   const source = sourceList.find((item) => analyses.get(item.id)?.relevant);
   if (!source) {
     return { concepts: [], claims: [], contradictions: [], gaps: [] };
   }
   const analysis = analyses.get(source.id)!;
-  const claims: SynthesisClaim[] = analysis.claims.map((claim) => ({
+  const selectedClaims =
+    analysis.claims.length <= summaryClaimLimit
+      ? analysis.claims
+      : Array.from({ length: summaryClaimLimit }, (_, index) =>
+          Math.round(
+            (index * (analysis.claims.length - 1)) /
+              Math.max(1, summaryClaimLimit - 1),
+          ),
+        )
+          .filter((value, index, all) => all.indexOf(value) === index)
+          .map((index) => analysis.claims[index]!);
+  const selectedIds = new Set(selectedClaims.map((claim) => claim.id));
+  const claims: SynthesisClaim[] = selectedClaims.map((claim) => ({
     id: `${source.id}:${claim.id}`,
     sourceId: source.id,
     quote: claim.quote,
@@ -1483,12 +1708,16 @@ function projectSingleRelevantSource(
       .map((concept) => concept.id),
   }));
   return {
-    concepts: analysis.concepts.map((concept) => ({
-      id: concept.id,
-      title: concept.title,
-      definition: concept.definition,
-      claimIds: concept.claimIds.map((claimId) => `${source.id}:${claimId}`),
-    })),
+    concepts: analysis.concepts
+      .map((concept) => ({
+        id: concept.id,
+        title: concept.title,
+        definition: concept.definition,
+        claimIds: concept.claimIds
+          .filter((claimId) => selectedIds.has(claimId))
+          .map((claimId) => `${source.id}:${claimId}`),
+      }))
+      .filter((concept) => concept.claimIds.length > 0),
     claims,
     contradictions: [],
     gaps: [],
@@ -1499,6 +1728,7 @@ function synthesisAliases(
   sourceList: SourceArtifact[],
   analyses: Map<string, SourceAnalysis>,
   allowedClaimIds?: Set<string>,
+  summaryClaimLimit = 16,
 ) {
   const claimAliasToId = new Map<string, string>();
   const claimAliasDetails = new Map<
@@ -1555,15 +1785,16 @@ function synthesisAliases(
 
   const expand = (value: unknown): unknown => {
     const data = object(value, "synthesis");
+    const selectedClaimItems = Array.isArray(data.claims)
+      ? data.claims.slice(0, summaryClaimLimit)
+      : [];
     const selectedClaimAliases = new Set(
-      Array.isArray(data.claims)
-        ? data.claims
-            .map((item, index) => {
-              const claim = object(item, `synthesis.claims[${index}]`);
-              return typeof claim.id === "string" ? claim.id : undefined;
-            })
-            .filter((id): id is string => Boolean(id))
-        : [],
+      selectedClaimItems
+        .map((item, index) => {
+          const claim = object(item, `synthesis.claims[${index}]`);
+          return typeof claim.id === "string" ? claim.id : undefined;
+        })
+        .filter((id): id is string => Boolean(id)),
     );
     const allConceptIds = new Set(
       Array.isArray(data.concepts)
@@ -1592,8 +1823,8 @@ function synthesisAliases(
         conceptClaimAliases.set(concept.id, aliases);
       }
     }
-    if (Array.isArray(data.claims)) {
-      for (const [index, item] of data.claims.entries()) {
+    if (selectedClaimItems.length) {
+      for (const [index, item] of selectedClaimItems.entries()) {
         const claim = object(item, `synthesis.claims[${index}]`);
         if (
           typeof claim.id !== "string" ||
@@ -1638,7 +1869,7 @@ function synthesisAliases(
             )
         : data.concepts,
       claims: Array.isArray(data.claims)
-        ? data.claims.map((item, index) => {
+        ? selectedClaimItems.map((item, index) => {
             const claim = object(item, `synthesis.claims[${index}]`);
             if (typeof claim.id !== "string")
               throw new Error("synthesis claim ID must be an alias");
@@ -1721,6 +1952,146 @@ function synthesisAliases(
   return { input, expand };
 }
 
+function reusePreviousTopics(
+  topics: RegistryTopic[],
+  previousRegistry: Record<string, unknown>,
+  currentClaimIds: Set<string>,
+): RegistryTopic[] {
+  const previous = new Map(
+    Array.isArray(previousRegistry.topics)
+      ? previousRegistry.topics.flatMap((item, index) => {
+          const topic = object(item, `previous topics[${index}]`);
+          return typeof topic.id === "string"
+            ? [[topic.id, topic] as const]
+            : [];
+        })
+      : [],
+  );
+  return topics.map((topic) => {
+    const prior = previous.get(topic.id);
+    return {
+      ...topic,
+      ...(typeof prior?.overview === "string"
+        ? { overview: prior.overview }
+        : {}),
+      ...(Array.isArray(prior?.conceptLabels)
+        ? {
+            conceptLabels: prior.conceptLabels.filter(
+              (label): label is string => typeof label === "string",
+            ),
+          }
+        : {}),
+      ...(Array.isArray(prior?.summaryClaimIds)
+        ? {
+            summaryClaimIds: prior.summaryClaimIds.filter(
+              (id): id is string =>
+                typeof id === "string" && currentClaimIds.has(id),
+            ),
+          }
+        : {}),
+    };
+  });
+}
+
+async function reusePreviousSynthesis(
+  previousGraph: Record<string, unknown>,
+  registryById: Map<string, RegistryEntry>,
+  metaDir: string,
+): Promise<Synthesis> {
+  const priorClaims = Array.isArray(previousGraph.claims)
+    ? previousGraph.claims
+    : [];
+  const claims = priorClaims.flatMap((item, index): SynthesisClaim[] => {
+    const prior = object(item, `previous summary claims[${index}]`);
+    if (typeof prior.id !== "string") return [];
+    const claim = registryById.get(prior.id);
+    if (!claim) return [];
+    return [
+      {
+        id: claim.id,
+        sourceId: claim.sourceId,
+        quote: claim.quote,
+        text: claim.statement,
+        locator: claim.locator,
+        conceptIds: Array.isArray(prior.conceptIds)
+          ? prior.conceptIds.filter(
+              (id): id is string => typeof id === "string",
+            )
+          : [],
+      },
+    ];
+  });
+  const summaryIds = new Set(claims.map((claim) => claim.id));
+  const concepts = Array.isArray(previousGraph.concepts)
+    ? previousGraph.concepts.flatMap((item, index) => {
+        const concept = object(item, `previous concepts[${index}]`);
+        if (
+          typeof concept.id !== "string" ||
+          typeof concept.title !== "string" ||
+          typeof concept.definition !== "string" ||
+          !Array.isArray(concept.claimIds)
+        ) {
+          return [];
+        }
+        const claimIds = concept.claimIds.filter(
+          (id): id is string => typeof id === "string" && summaryIds.has(id),
+        );
+        return claimIds.length
+          ? [
+              {
+                id: concept.id,
+                title: concept.title,
+                definition: concept.definition,
+                claimIds,
+              },
+            ]
+          : [];
+      })
+    : [];
+  const priorContradictions = Array.isArray(previousGraph.summaryContradictions)
+    ? previousGraph.summaryContradictions
+    : [];
+  const contradictions = priorContradictions.flatMap((item, index) => {
+    const contradiction = object(
+      item,
+      `previous summary contradictions[${index}]`,
+    );
+    if (
+      !Array.isArray(contradiction.claimIds) ||
+      typeof contradiction.description !== "string"
+    ) {
+      return [];
+    }
+    const claimIds = contradiction.claimIds.filter(
+      (id): id is string => typeof id === "string" && summaryIds.has(id),
+    );
+    return claimIds.length >= 2
+      ? [{ claimIds, description: contradiction.description }]
+      : [];
+  });
+  const gapsContent = await readTextIfExists(path.join(metaDir, "gaps.json"));
+  const gapsData = gapsContent
+    ? object(JSON.parse(gapsContent), "previous gaps")
+    : {};
+  const gaps = Array.isArray(gapsData.gaps)
+    ? gapsData.gaps.flatMap((item, index) => {
+        const gap = object(item, `previous gaps[${index}]`);
+        return typeof gap.priority === "number" &&
+          typeof gap.description === "string" &&
+          typeof gap.searchQuery === "string"
+          ? [
+              {
+                priority: gap.priority,
+                description: gap.description,
+                searchQuery: gap.searchQuery,
+              },
+            ]
+          : [];
+      })
+    : [];
+  return { concepts, claims, contradictions, gaps };
+}
+
 function recoverTruncatedSynthesis(value: string): unknown | undefined {
   const text = value.trim().replace(/^```(?:json)?\s*/i, "");
   const marker = '"gaps":[';
@@ -1773,10 +2144,69 @@ export async function compileWiki(
   const config = await loadConfig(options.root);
   const provider = requireLlm(config, options);
   const sourceList = await artifacts(config.sourcesDir);
+  const previousGraphContent = await readTextIfExists(
+    path.join(config.metaDir, "knowledge_graph.json"),
+  );
+  const previousGraph = previousGraphContent
+    ? object(JSON.parse(previousGraphContent), "previous knowledge graph")
+    : {};
+  const previousRegistryContent = await readTextIfExists(
+    path.join(config.metaDir, "claims.json"),
+  );
+  const previousRegistry = previousRegistryContent
+    ? object(JSON.parse(previousRegistryContent), "previous Claim Registry")
+    : {};
+  const previousCapabilitiesContent = await readTextIfExists(
+    path.join(config.metaDir, "capabilities.json"),
+  );
+  const previousCapabilities = previousCapabilitiesContent
+    ? object(JSON.parse(previousCapabilitiesContent), "previous capabilities")
+    : {};
+  const previousSourceCount = Array.isArray(previousGraph.sources)
+    ? previousGraph.sources.length
+    : 0;
+  const evidenceSourceCount = sourceList.filter(
+    (source) => !source.mediaType.includes("llmwiki.search-result"),
+  ).length;
+  const lastGlobalSynthesisEvidenceSourceCount =
+    typeof previousCapabilities.lastGlobalSynthesisEvidenceSourceCount ===
+    "number"
+      ? previousCapabilities.lastGlobalSynthesisEvidenceSourceCount
+      : evidenceSourceCount;
+  const deferGlobalSynthesis =
+    options.deferGlobalSynthesis === true &&
+    previousSourceCount > 0 &&
+    evidenceSourceCount - lastGlobalSynthesisEvidenceSourceCount <
+      config.llm.globalSynthesisSourceInterval;
+  const previousCompiledSourceIds = new Set(
+    Array.isArray(previousGraph.sources)
+      ? previousGraph.sources
+          .map((item, index) => {
+            const source = object(
+              item,
+              `previous knowledge graph sources[${index}]`,
+            );
+            return typeof source.id === "string" ? source.id : undefined;
+          })
+          .filter((id): id is string => typeof id === "string")
+      : [],
+  );
   // Build every plan before obtaining a provider response: overflow must never
   // spend tokens for earlier sources/chunks.
   const chunksBySource = new Map(
-    sourceList.map((source) => [source.id, chunkSource(source, config.llm)]),
+    sourceList.map((source) => [
+      source.id,
+      chunkSource(
+        source,
+        previousCompiledSourceIds.has(source.id)
+          ? {
+              chunkInputChars: config.llm.chunkInputChars,
+              chunkOverlapChars: config.llm.chunkOverlapChars,
+              maxChunksPerSource: config.llm.maxChunksPerSource,
+            }
+          : config.llm,
+      ),
+    ]),
   );
   const model = cleanModel(process.env.ANTHROPIC_MODEL ?? config.llm.model);
   const analyses = new Map<string, SourceAnalysis>();
@@ -1785,12 +2215,13 @@ export async function compileWiki(
     Array<{ chunkId: string; reason: string }>
   >();
   const usage = new LlmUsageTracker(options.maxLlmTokens);
-  for (const source of sourceList) {
-    const chunkAnalyses: Array<{
-      chunk: SourceChunk;
-      analysis: SourceAnalysis;
-    }> = [];
-    for (const chunk of chunksBySource.get(source.id) ?? []) {
+  const chunkTasks = sourceList.flatMap((source) =>
+    (chunksBySource.get(source.id) ?? []).map((chunk) => ({ source, chunk })),
+  );
+  const analyzedChunks = await mapConcurrent(
+    chunkTasks,
+    config.llm.analysisConcurrency,
+    async ({ source, chunk }) => {
       const key = sha256(
         JSON.stringify({
           chunkHash: chunk.hash,
@@ -1821,13 +2252,27 @@ export async function compileWiki(
           cache,
           JSON.stringify(cacheableAnalysis(analysis), null, 2),
         );
-      for (const reason of analysis.rejectedClaims) {
-        const entries = rejectedBySource.get(source.id) ?? [];
-        entries.push({ chunkId: chunk.id, reason });
-        rejectedBySource.set(source.id, entries);
-      }
-      chunkAnalyses.push({ chunk, analysis });
+      return { source, chunk, analysis };
+    },
+  );
+  const chunksByAnalyzedSource = new Map<
+    string,
+    Array<{ chunk: SourceChunk; analysis: SourceAnalysis }>
+  >();
+  for (const { source, chunk, analysis } of analyzedChunks) {
+    const chunkAnalyses = chunksByAnalyzedSource.get(source.id) ?? [];
+    chunkAnalyses.push({ chunk, analysis });
+    chunksByAnalyzedSource.set(source.id, chunkAnalyses);
+    for (const reason of analysis.rejectedClaims) {
+      const entries = rejectedBySource.get(source.id) ?? [];
+      entries.push({ chunkId: chunk.id, reason });
+      rejectedBySource.set(source.id, entries);
     }
+  }
+  for (const source of sourceList) {
+    const chunkAnalyses = (chunksByAnalyzedSource.get(source.id) ?? []).sort(
+      (left, right) => left.chunk.index - right.chunk.index,
+    );
     analyses.set(source.id, mergeChunkAnalyses(source, chunkAnalyses));
   }
   const sourceMap = new Map(sourceList.map((source) => [source.id, source]));
@@ -1835,33 +2280,48 @@ export async function compileWiki(
   const registryById = new Map(
     registry.claims.map((claim) => [claim.id, claim]),
   );
-  const topics = await synthesizeTopics(
-    routeTopics(registry.claims),
-    registryById,
-    config,
-    model,
-    provider,
-    usage,
-  );
-  const targetedCandidates = await targetedRelationshipCandidates(
-    config.metaDir,
-    sourceList,
-    registry.claims,
-  );
-  const analyzedRelationshipEdges = await analyzeRelationships(
-    registry.claims,
-    config,
-    model,
-    provider,
-    usage,
-    targetedCandidates,
-  );
-  const relationshipEdges = await mergeDurableTargetedRelationships(
-    config.metaDir,
-    registry.claims,
-    analyzedRelationshipEdges,
-    targetedCandidates,
-  );
+  const routedTopics = routeTopics(registry.claims);
+  const topics = deferGlobalSynthesis
+    ? reusePreviousTopics(
+        routedTopics,
+        previousRegistry,
+        new Set(registry.claims.map((claim) => claim.id)),
+      )
+    : await synthesizeTopics(
+        routedTopics,
+        registryById,
+        config,
+        model,
+        provider,
+        usage,
+      );
+  let relationshipEdges: ClaimRelationship[];
+  if (deferGlobalSynthesis) {
+    relationshipEdges = (
+      await previousClaimRelationships(config.metaDir, registry.claims)
+    ).edges;
+  } else {
+    const targetedCandidates = await targetedRelationshipCandidates(
+      config.metaDir,
+      sourceList,
+      registry.claims,
+    );
+    const analyzedRelationshipEdges = await analyzeRelationships(
+      registry.claims,
+      config,
+      model,
+      provider,
+      usage,
+      targetedCandidates,
+      options.embeddingProvider,
+    );
+    relationshipEdges = await mergeDurableTargetedRelationships(
+      config.metaDir,
+      registry.claims,
+      analyzedRelationshipEdges,
+      targetedCandidates,
+    );
+  }
   const preliminaryQuality = buildQualityArtifacts(
     sourceList,
     registry.claims,
@@ -1901,7 +2361,12 @@ export async function compileWiki(
     })),
     concepts: analyses.get(source.id)!.concepts,
   }));
-  const aliases = synthesisAliases(sourceList, analyses, summaryEligibility);
+  const aliases = synthesisAliases(
+    sourceList,
+    analyses,
+    summaryEligibility,
+    config.llm.summaryClaimLimit,
+  );
   const synthKey = sha256(
     JSON.stringify({
       model,
@@ -1925,8 +2390,20 @@ export async function compileWiki(
     source.claims.map((claim) => claim.id),
   );
   let result: Synthesis;
-  if (relevantSourceCount <= 1) {
-    result = projectSingleRelevantSource(sourceList, analyses);
+  let resultUsesRegistryIds = false;
+  if (deferGlobalSynthesis) {
+    result = await reusePreviousSynthesis(
+      previousGraph,
+      registryById,
+      config.metaDir,
+    );
+    resultUsesRegistryIds = true;
+  } else if (relevantSourceCount <= 1) {
+    result = projectSingleRelevantSource(
+      sourceList,
+      analyses,
+      config.llm.summaryClaimLimit,
+    );
   } else if (existingSynthesis) {
     result = synthesis(
       JSON.parse(existingSynthesis),
@@ -1987,7 +2464,7 @@ export async function compileWiki(
       }
     }
   }
-  if (relevantSourceCount > 1 && !existingSynthesis)
+  if (!deferGlobalSynthesis && relevantSourceCount > 1 && !existingSynthesis)
     await writeText(synthesisCache, JSON.stringify(result, null, 2));
 
   // Synthesis aliases are not persistent claim identities.
@@ -1997,21 +2474,23 @@ export async function compileWiki(
       throw new Error(`summary references unknown registry claim ${id}`);
     return value;
   };
-  result = {
-    ...result,
-    concepts: result.concepts.map((concept) => ({
-      ...concept,
-      claimIds: concept.claimIds.map(registryId),
-    })),
-    claims: result.claims.map((claim) => ({
-      ...claim,
-      id: registryId(claim.id),
-    })),
-    contradictions: result.contradictions.map((contradiction) => ({
-      ...contradiction,
-      claimIds: contradiction.claimIds.map(registryId),
-    })),
-  };
+  if (!resultUsesRegistryIds) {
+    result = {
+      ...result,
+      concepts: result.concepts.map((concept) => ({
+        ...concept,
+        claimIds: concept.claimIds.map(registryId),
+      })),
+      claims: result.claims.map((claim) => ({
+        ...claim,
+        id: registryId(claim.id),
+      })),
+      contradictions: result.contradictions.map((contradiction) => ({
+        ...contradiction,
+        claimIds: contradiction.claimIds.map(registryId),
+      })),
+    };
+  }
   // Deterministic quality derives from cached/persisted evidence only and
   // intentionally remains outside LLM cache keys.
   const quality = preliminaryQuality;
@@ -2129,7 +2608,7 @@ ${sourceScore.penalties.map((penalty) => `- Warning: ${penalty}`).join("\n")}${s
       generatedDocument(
         {
           title: source.title,
-          slug: slugify(`${source.title}-${source.id.slice(0, 8)}`),
+          slug: `${slugify(source.title).slice(0, 70)}-${source.id.slice(0, 8)}`,
           generated: "true",
           type: "source",
           source_id: source.id,
@@ -2403,6 +2882,11 @@ ${sourceScore.penalties.map((penalty) => `- Warning: ${penalty}`).join("\n")}${s
         quality: qualityCounts,
         model,
         llm: true,
+        globalSynthesis: !deferGlobalSynthesis,
+        evidenceSourceCount,
+        lastGlobalSynthesisEvidenceSourceCount: deferGlobalSynthesis
+          ? lastGlobalSynthesisEvidenceSourceCount
+          : evidenceSourceCount,
         lastCompileUsage: totalUsage,
       },
       null,
@@ -2418,7 +2902,7 @@ ${sourceScore.penalties.map((penalty) => `- Warning: ${penalty}`).join("\n")}${s
   const log = (await readTextIfExists(logPath)) ?? "# Compilation log\n";
   await writeText(
     logPath,
-    `${log.trimEnd()}\n\n- ${now}: LLM compiled ${sourceList.length} sources, ${result.concepts.length} concepts, ${registry.claims.length} registry claims, and ${result.claims.length} summary claims (input tokens=${totalUsage.inputTokens}, output tokens=${totalUsage.outputTokens}).`,
+    `${log.trimEnd()}\n\n- ${now}: LLM compiled ${sourceList.length} sources, ${result.concepts.length} concepts, ${registry.claims.length} registry claims, and ${result.claims.length} summary claims; global synthesis=${!deferGlobalSynthesis} (input tokens=${totalUsage.inputTokens}, output tokens=${totalUsage.outputTokens}).`,
   );
   return {
     sources: sourceList.length,
@@ -2435,6 +2919,7 @@ ${sourceScore.penalties.map((penalty) => `- Warning: ${penalty}`).join("\n")}${s
     contradictionCount: relationshipEdges.filter(
       (edge) => edge.type === "contradicts",
     ).length,
+    globalSynthesis: !deferGlobalSynthesis,
     usage: totalUsage,
   };
 }

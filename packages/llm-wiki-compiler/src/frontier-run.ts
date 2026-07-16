@@ -3,7 +3,11 @@ import { adjudicateWiki } from "./adjudicate.js";
 import { compileWiki } from "./compile.js";
 import { loadConfig } from "./config.js";
 import { evaluateRetrieval } from "./evaluate.js";
-import { completeEvidenceClue, selectEvidenceClues } from "./frontier.js";
+import {
+  completeEvidenceClue,
+  getEvidenceFrontierStatus,
+  selectEvidenceClues,
+} from "./frontier.js";
 import { hasUncompiledSources } from "./learn.js";
 import { WikiLlmResponseError } from "./llm.js";
 import { searchWiki } from "./search.js";
@@ -13,9 +17,10 @@ import type {
   EvidenceFrontierRunResult,
   LlmUsage,
   SearchOptions,
+  SearchRun,
   ServiceOptions,
 } from "./types.js";
-import { readTextIfExists } from "./utils.js";
+import { mapConcurrent, readTextIfExists } from "./utils.js";
 
 function tokenTotal(usage?: LlmUsage): number {
   return (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0);
@@ -64,7 +69,7 @@ export async function runEvidenceFrontier(
     ...options,
     ...(options.clueLimit ? { limit: options.clueLimit } : {}),
   });
-  const searches = [];
+  let searches: SearchRun[] = [];
   const totalUsage: Required<LlmUsage> = {
     inputTokens: 0,
     outputTokens: 0,
@@ -72,65 +77,72 @@ export async function runEvidenceFrontier(
   let frontier = selection.status;
   const maximumDownloads =
     options.maxDownloads ?? config.search.maxDownloads ?? 3;
-  let downloadAttempts = 0;
   try {
-    for (const clue of selection.clues) {
-      let run;
-      try {
-        run = await searchWiki(clue.query, {
-          ...childOptions(
+    const clueCount = selection.clues.length;
+    const perClueTokens =
+      options.maxLlmTokens === undefined || clueCount === 0
+        ? undefined
+        : Math.floor(options.maxLlmTokens / clueCount);
+    const baseDownloads =
+      clueCount === 0 ? 0 : Math.floor(maximumDownloads / clueCount);
+    const extraDownloads = clueCount === 0 ? 0 : maximumDownloads % clueCount;
+    searches = await mapConcurrent(
+      selection.clues,
+      config.lifecycle.frontierConcurrency,
+      async (clue, index) => {
+        let run;
+        try {
+          run = await searchWiki(clue.query, {
+            ...childOptions(options, config.root, perClueTokens),
+            importResults: true,
+            limit: options.limit ?? config.search.resultLimit,
+            fullText: options.fullText ?? false,
+            oaOnly: options.oaOnly ?? config.search.oaOnly ?? true,
+            maxDownloads: baseDownloads + (index < extraDownloads ? 1 : 0),
+            maxFileBytes:
+              options.maxFileBytes ??
+              config.search.maxFileBytes ??
+              100 * 1024 * 1024,
+            onFullTextFailure: options.onFullTextFailure ?? "metadata",
+            upgradeSourceIds: clue.targetIds
+              .filter((target) => target.startsWith("source-"))
+              .map((target) => target.slice("source-".length)),
+            ...(options.provider ? { provider: options.provider } : {}),
+            ...(options.providers ? { providers: options.providers } : {}),
+            ...(options.from ? { from: options.from } : {}),
+            ...(options.to ? { to: options.to } : {}),
+            ...(options.signal ? { signal: options.signal } : {}),
+          });
+        } catch (error) {
+          await completeEvidenceClue(
+            clue.id,
+            {
+              resultCount: 0,
+              importedCount: 0,
+              error: error instanceof Error ? error.message : String(error),
+            },
             options,
-            config.root,
-            remainingTokens(options.maxLlmTokens, tokenTotal(totalUsage)),
-          ),
-          importResults: true,
-          limit: options.limit ?? config.search.resultLimit,
-          fullText: options.fullText ?? false,
-          oaOnly: options.oaOnly ?? config.search.oaOnly ?? true,
-          maxDownloads: Math.max(0, maximumDownloads - downloadAttempts),
-          maxFileBytes:
-            options.maxFileBytes ??
-            config.search.maxFileBytes ??
-            100 * 1024 * 1024,
-          onFullTextFailure: options.onFullTextFailure ?? "metadata",
-          upgradeSourceIds: clue.targetIds
-            .filter((target) => target.startsWith("source-"))
-            .map((target) => target.slice("source-".length)),
-          ...(options.provider ? { provider: options.provider } : {}),
-          ...(options.providers ? { providers: options.providers } : {}),
-          ...(options.from ? { from: options.from } : {}),
-          ...(options.to ? { to: options.to } : {}),
-          ...(options.signal ? { signal: options.signal } : {}),
-        });
-      } catch (error) {
-        frontier = await completeEvidenceClue(
+          );
+          throw error;
+        }
+        const clueError =
+          run.results.length === 0 && run.errors.length
+            ? run.errors.join("; ")
+            : undefined;
+        await completeEvidenceClue(
           clue.id,
           {
-            resultCount: 0,
-            importedCount: 0,
-            error: error instanceof Error ? error.message : String(error),
+            resultCount: run.results.length,
+            importedCount: run.imported.length,
+            ...(clueError ? { error: clueError } : {}),
           },
           options,
         );
-        throw error;
-      }
-      searches.push(run);
-      addUsage(totalUsage, run.usage);
-      downloadAttempts += run.fullTextAttempts ?? 0;
-      const clueError =
-        run.results.length === 0 && run.errors.length
-          ? run.errors.join("; ")
-          : undefined;
-      frontier = await completeEvidenceClue(
-        clue.id,
-        {
-          resultCount: run.results.length,
-          importedCount: run.imported.length,
-          ...(clueError ? { error: clueError } : {}),
-        },
-        options,
-      );
-    }
+        return run;
+      },
+    );
+    for (const run of searches) addUsage(totalUsage, run.usage);
+    frontier = await getEvidenceFrontierStatus(options);
     const imported = searches.reduce(
       (total, search) => total + search.imported.length,
       0,
@@ -140,20 +152,23 @@ export async function runEvidenceFrontier(
     const needsAdjudication = before.pendingAdjudications > 0;
     const needsIndex = before.semanticStaleClaims > 0;
     let compiled = false;
+    let globalSynthesis = false;
     let indexed = false;
     let evaluated = false;
     if (needsCompile) {
-      const compilation = await compileWiki(
-        childOptions(
+      const compilation = await compileWiki({
+        ...childOptions(
           options,
           config.root,
           remainingTokens(options.maxLlmTokens, tokenTotal(totalUsage)),
         ),
-      );
+        deferGlobalSynthesis: true,
+      });
       addUsage(totalUsage, compilation.usage);
       compiled = true;
+      globalSynthesis = compilation.globalSynthesis ?? true;
     }
-    if (needsCompile || needsAdjudication) {
+    if ((needsCompile && globalSynthesis) || needsAdjudication) {
       const adjudication = await adjudicateWiki(
         childOptions(
           options,
@@ -167,7 +182,7 @@ export async function runEvidenceFrontier(
       await buildSemanticIndex(childOptions(options, config.root));
       indexed = true;
     }
-    if (needsCompile || needsAdjudication || needsIndex) {
+    if (globalSynthesis || needsAdjudication || (!needsCompile && needsIndex)) {
       if (
         await readTextIfExists(
           path.join(config.metaDir, "retrieval_benchmark.json"),

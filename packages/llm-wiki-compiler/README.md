@@ -51,6 +51,11 @@ when fewer than 128 output Tokens remain after the conservative input estimate.
 Adaptive thinking Tokens are included in Anthropic `output_tokens` and are
 therefore included in the same operation and Mission budget accounting.
 
+Parallel semantic operations reserve conservative input plus maximum output
+Tokens atomically before dispatch, then reconcile the reservation with actual
+usage. This prevents concurrent Chunk, topic, relationship, screening, and
+adjudication calls from bypassing the operation budget.
+
 ## Evidence lifecycle
 
 - Ingestion accepts UTF-8 text, Markdown, JSON, HTML, PDF, and HTTP(S). It normalizes content and stores SHA-256-addressed JSON artifacts in `sources/`, preserving provenance and timestamps. Empty, malformed, and unsupported inputs fail.
@@ -61,6 +66,11 @@ therefore included in the same operation and Mission budget accounting.
 - Every accepted Claim is persisted in `meta/claims.json`; rejected Claim
   audits are stored separately. `meta/claim_graph.json` stores full-registry
   supports/contradicts/qualifies/duplicate edges.
+- Source chunks, topic synthesis, relationship batches, contradiction batches,
+  screening calls, and independent Frontier clues use configurable bounded
+  concurrency. Existing graph edges are retained and only pairs involving new
+  Claims (plus explicit corroboration targets) are sent for relationship
+  analysis.
 - Claims are routed into generated `wiki/topics/*.md` shards. The 16-Claim
   limit applies only to the compatibility summary/index, never to Registry
   storage, topic pages, contradiction edges, or query retrieval.
@@ -117,11 +127,17 @@ therefore included in the same operation and Mission budget accounting.
 - Lint checks links, generated metadata, duplicate slugs, source references, and thin generated pages.
 - Reflection persists JSON and Markdown observations with validated claim/source references and prioritized search queries.
 - Search fans out to the configured `crossref`, `arxiv`, and `openalex` providers and deterministically merges matching DOI, arXiv, OpenAlex, or title/year/author records before screening. The legacy `search.provider: "crossref"` config remains valid; use `search.providers` for an ordered array. Raw search makes no LLM call; imports require `--approve-llm`, an abstract or snippet, and LLM screening against focus plus the compact existing-source index.
+- A query consisting only of an arXiv ID or exact arXiv URL is strict: unrelated
+  provider results are discarded, the requested version (or latest exact
+  version) wins, and at most one work can be imported.
 - `enrich-openalex` enriches existing processed source **metadata only**. It never compiles, calls an LLM, or changes source content, IDs, or hashes. Matching is exact OpenAlex ID, then exact DOI, then one strict normalized title/year/first-author match; ambiguous records are reported and untouched. Use `--dry-run`, `--limit`, or `--only-missing` to control a run.
 - `--full-text` is opt-in and is paired with `--oa-only` (default), `--max-downloads` (default 3), and `--max-mb` (default 100). It must never be used to bypass a paywall, login, robots restriction, or redistribution terms. Set OpenAlex credentials only with `OPENALEX_API_KEY` (and optional `OPENALEX_MAILTO`) in the environment; they are not stored in config or output. arXiv API requests have a shared minimum three-second interval.
 - Learn reads structured `meta/gaps.json`, fans each query out to configured
   providers, shares one full-text download budget across all gaps, and
   recompiles once after all imports.
+- Deferred global synthesis milestones count newly compiled full-text evidence
+  sources, not metadata-only search branches. Metadata remains queryable but
+  cannot prematurely trigger the expensive Topic/relationship/summary pass.
 
 ```json
 {
@@ -167,7 +183,12 @@ therefore included in the same operation and Mission budget accounting.
   "llm": {
     "chunkInputChars": 12000,
     "chunkOverlapChars": 400,
-    "maxChunksPerSource": 64
+    "maxChunksPerSource": 64,
+    "analysisConcurrency": 3,
+    "screeningConcurrency": 3,
+    "topicConcurrency": 3,
+    "relationshipConcurrency": 4,
+    "adjudicationConcurrency": 3
   }
 }
 ```

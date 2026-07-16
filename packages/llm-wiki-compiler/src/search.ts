@@ -12,7 +12,7 @@ import type {
   ServiceOptions,
   SourceArtifact,
 } from "./types.js";
-import { htmlToText, normalizeText } from "./utils.js";
+import { htmlToText, mapConcurrent, normalizeText } from "./utils.js";
 
 async function upgradeSources(
   sourcesDir: string,
@@ -434,12 +434,35 @@ function resultDateRange(
   };
 }
 
+function exactArxivReference(
+  query: string,
+): { baseId: string; versionId?: string } | undefined {
+  const normalized = query
+    .trim()
+    .replace(/^arxiv:\s*/i, "")
+    .replace(/^https?:\/\/arxiv\.org\/(?:abs|pdf)\//i, "")
+    .replace(/\.pdf$/i, "");
+  const match = normalized.match(/^(\d{4}\.\d{4,5})(v\d+)?$/i);
+  return match
+    ? {
+        baseId: match[1]!,
+        ...(match[2] ? { versionId: `${match[1]}${match[2]}` } : {}),
+      }
+    : undefined;
+}
+
+function arxivVersion(value: string | undefined): number {
+  const match = value?.match(/v(\d+)$/i);
+  return match ? Number(match[1]) : 0;
+}
+
 export async function searchWiki(
   query: string,
   options: SearchOptions & ServiceOptions = {},
 ): Promise<SearchRun> {
   if (!query.trim()) throw new Error("Search query must not be empty");
   const config = await loadConfig(options.root);
+  const exactArxiv = exactArxivReference(query);
   const allowedUpgrades = await upgradeSources(
     config.sourcesDir,
     options.upgradeSourceIds,
@@ -494,7 +517,7 @@ export async function searchWiki(
         }),
       ),
     );
-    results = mergeSearchResults(
+    const merged = mergeSearchResults(
       settled.flatMap((result, index) => {
         if (result.status === "fulfilled") return result.value;
         errors.push(
@@ -506,14 +529,33 @@ export async function searchWiki(
         );
         return [];
       }),
-    )
-      .filter((result) => {
-        const published = resultDateRange(result);
-        if (from && (!published || published.to < from)) return false;
-        if (to && (!published || published.from > to)) return false;
-        return true;
-      })
-      .slice(0, limit);
+    ).filter((result) => {
+      const published = resultDateRange(result);
+      if (from && (!published || published.to < from)) return false;
+      if (to && (!published || published.from > to)) return false;
+      return true;
+    });
+    results = exactArxiv
+      ? merged
+          .filter(
+            (result) =>
+              normalizeArxivId(result.arxivId ?? result.versionId) ===
+              exactArxiv.baseId,
+          )
+          .sort((left, right) => {
+            const leftExact =
+              exactArxiv.versionId !== undefined &&
+              left.versionId === exactArxiv.versionId;
+            const rightExact =
+              exactArxiv.versionId !== undefined &&
+              right.versionId === exactArxiv.versionId;
+            return (
+              Number(rightExact) - Number(leftExact) ||
+              arxivVersion(right.versionId) - arxivVersion(left.versionId)
+            );
+          })
+          .slice(0, 1)
+      : merged.slice(0, limit);
   } catch (error) {
     errors.push(error instanceof Error ? error.message : String(error));
   } finally {
@@ -525,7 +567,30 @@ export async function searchWiki(
   let downloadAttempts = 0;
   if (options.importResults) {
     const llm = requireLlm(config, options);
-    for (const result of results) {
+    const screened = await mapConcurrent(
+      results,
+      config.llm.screeningConcurrency,
+      async (result) => {
+        if (!result.abstract && !result.snippet) {
+          return {
+            result,
+            error: `Skipped "${result.title}": search result contained no abstract or snippet evidence`,
+          };
+        }
+        return {
+          result,
+          screening: await screenSearchCandidate(
+            config,
+            llm,
+            result,
+            { query },
+            usage,
+          ),
+        };
+      },
+    );
+    for (const item of screened) {
+      const { result } = item;
       const content = evidenceText(result);
       const locationLicense = result.fullTextLocations?.find(
         (location) => location.license,
@@ -534,19 +599,11 @@ export async function searchWiki(
       const hasOpenFullText = result.fullTextLocations?.some(
         (location) => location.openAccess === true,
       );
-      if (!result.abstract && !result.snippet) {
-        errors.push(
-          `Skipped "${result.title}": search result contained no abstract or snippet evidence`,
-        );
+      if (item.error) {
+        errors.push(item.error);
         continue;
       }
-      const screening = await screenSearchCandidate(
-        config,
-        llm,
-        result,
-        { query },
-        usage,
-      );
+      const screening = item.screening!;
       if (!screening.relevant) continue;
       if (
         screening.duplicate &&

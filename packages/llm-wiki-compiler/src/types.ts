@@ -43,6 +43,7 @@ export interface WikiConfig {
     noNoveltyCooldownHours: number;
     maxTerminalFrontierItems: number;
     maxFrontierHistoryItems: number;
+    frontierConcurrency: number;
     refreshIntervalHours: number;
   };
   llm: {
@@ -55,6 +56,8 @@ export interface WikiConfig {
     chunkOverlapChars: number;
     /** Fail before making LLM calls when a source would exceed this chunk count. */
     maxChunksPerSource: number;
+    adaptiveChunkThresholdChars: number;
+    adaptiveChunkInputChars: number;
     analysisOutputTokens: number;
     screeningOutputTokens: number;
     synthesisOutputTokens: number;
@@ -66,10 +69,18 @@ export interface WikiConfig {
     maxClaimsPerTopicPrompt: number;
     /** Bounded deterministic relationship candidates considered per compile. */
     maxRelationshipCandidates: number;
+    relationshipCandidatesPerClaim: number;
+    relationshipOppositionCandidatesPerClaim: number;
     /** Bounded candidate pairs supplied to one relationship request. */
     relationshipBatchSize: number;
     /** Bounded full-registry evidence candidates supplied to a query request. */
     queryCandidateLimit: number;
+    analysisConcurrency: number;
+    screeningConcurrency: number;
+    topicConcurrency: number;
+    relationshipConcurrency: number;
+    adjudicationConcurrency: number;
+    globalSynthesisSourceInterval: number;
     thinking: {
       type: "disabled" | "adaptive";
       effort: "low" | "medium" | "high" | "xhigh" | "max";
@@ -171,6 +182,7 @@ export interface CompileResult {
   topicCount?: number;
   relationshipCount?: number;
   contradictionCount?: number;
+  globalSynthesis?: boolean;
   usage?: LlmUsage;
 }
 
@@ -610,6 +622,8 @@ export interface ServiceOptions {
   embeddingProvider?: EmbeddingProvider;
   /** Optional alternate semantic index used for parallel model evaluation. */
   semanticIndexPath?: string;
+  /** Defer global topic/relationship/summary work until its source milestone. */
+  deferGlobalSynthesis?: boolean;
 }
 
 export interface OpenAlexEnrichmentOptions extends ServiceOptions {

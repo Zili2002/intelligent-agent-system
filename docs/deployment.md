@@ -77,6 +77,11 @@ Frontier admission becomes `throttled` at the configured high watermark and
 counters through `llmwiki status` or `llmwiki frontier`. The Frontier file is
 cross-process locked, so multiple schedulers cannot exceed quotas by racing.
 
+Recommended initial semantic concurrency is 3 source analyses, 3 topic
+summaries, 4 relationship batches, 3 adjudication batches, 3 screening calls,
+and 2 Frontier clues. Increase only after observing proxy rate limits and
+memory. arXiv remains globally serialized regardless of Frontier concurrency.
+
 arXiv metadata search requires no credential and is throttled to one request
 start every three seconds. OpenAlex requires `OPENALEX_API_KEY`. Full-text
 acquisition accepts only explicit PDF/HTML/text/XML locations, defaults to

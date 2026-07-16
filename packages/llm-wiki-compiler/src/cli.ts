@@ -133,7 +133,7 @@ function fullTextFailure(value: string): "metadata" | "skip" {
 program
   .name("llmwiki")
   .description("LLM evidence-first local wiki compiler")
-  .version("1.3.0")
+  .version("1.4.1")
   .option("-r, --root <path>", "repository root", process.cwd())
   .option(
     "--approve-llm",

@@ -102,6 +102,38 @@ export async function readTextIfExists(
   }
 }
 
+export async function mapConcurrent<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  mapper: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  if (!Number.isInteger(concurrency) || concurrency < 1) {
+    throw new Error("Concurrency must be a positive integer");
+  }
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  let failure: unknown;
+  const worker = async () => {
+    while (failure === undefined) {
+      const index = cursor++;
+      if (index >= items.length) return;
+      try {
+        results[index] = await mapper(items[index]!, index);
+      } catch (error) {
+        failure = error;
+      }
+    }
+  };
+  await Promise.all(
+    Array.from(
+      { length: Math.min(concurrency, Math.max(1, items.length)) },
+      worker,
+    ),
+  );
+  if (failure !== undefined) throw failure;
+  return results;
+}
+
 export async function walkFiles(
   directory: string,
   extension?: string,

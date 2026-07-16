@@ -47,6 +47,7 @@ export const DEFAULT_CONFIG: WikiConfig = {
     noNoveltyCooldownHours: 168,
     maxTerminalFrontierItems: 200,
     maxFrontierHistoryItems: 10_000,
+    frontierConcurrency: 2,
     refreshIntervalHours: 24,
   },
   llm: {
@@ -55,6 +56,8 @@ export const DEFAULT_CONFIG: WikiConfig = {
     chunkInputChars: 12_000,
     chunkOverlapChars: 400,
     maxChunksPerSource: 64,
+    adaptiveChunkThresholdChars: 60_000,
+    adaptiveChunkInputChars: 18_000,
     analysisOutputTokens: 8_000,
     screeningOutputTokens: 2_000,
     synthesisOutputTokens: 12_000,
@@ -62,9 +65,17 @@ export const DEFAULT_CONFIG: WikiConfig = {
     queryOutputTokens: 4_000,
     summaryClaimLimit: 16,
     maxClaimsPerTopicPrompt: 48,
-    maxRelationshipCandidates: 256,
+    maxRelationshipCandidates: 512,
+    relationshipCandidatesPerClaim: 8,
+    relationshipOppositionCandidatesPerClaim: 4,
     relationshipBatchSize: 16,
     queryCandidateLimit: 16,
+    analysisConcurrency: 3,
+    screeningConcurrency: 3,
+    topicConcurrency: 3,
+    relationshipConcurrency: 4,
+    adjudicationConcurrency: 3,
+    globalSynthesisSourceInterval: 10,
     thinking: {
       type: "adaptive",
       effort: "high",
@@ -307,6 +318,16 @@ export function validateConfig(input: unknown): WikiConfig {
       "Config llm.chunkOverlapChars must be smaller than chunkInputChars",
     );
   }
+  const adaptiveChunkInputChars = bounded(
+    "adaptiveChunkInputChars",
+    chunkInputChars,
+    30_000,
+  );
+  if (chunkOverlapChars >= adaptiveChunkInputChars) {
+    throw new Error(
+      "Config llm.chunkOverlapChars must be smaller than adaptiveChunkInputChars",
+    );
+  }
   return {
     wikiPath: validateRelativePath(data.wikiPath, "wikiPath"),
     sourcesPath: validateRelativePath(data.sourcesPath, "sourcesPath"),
@@ -386,6 +407,7 @@ export function validateConfig(input: unknown): WikiConfig {
         10,
         1_000_000,
       ),
+      frontierConcurrency: lifecycleInteger("frontierConcurrency", 1, 16),
       refreshIntervalHours: lifecycleInteger("refreshIntervalHours", 1, 8_760),
     },
     llm: {
@@ -394,6 +416,12 @@ export function validateConfig(input: unknown): WikiConfig {
       chunkInputChars,
       chunkOverlapChars,
       maxChunksPerSource: bounded("maxChunksPerSource", 1, 1_000),
+      adaptiveChunkThresholdChars: bounded(
+        "adaptiveChunkThresholdChars",
+        chunkInputChars,
+        2_000_000,
+      ),
+      adaptiveChunkInputChars,
       analysisOutputTokens: bounded("analysisOutputTokens", 128, 8_000),
       screeningOutputTokens: bounded("screeningOutputTokens", 128, 4_000),
       synthesisOutputTokens: bounded("synthesisOutputTokens", 128, 12_000),
@@ -402,8 +430,28 @@ export function validateConfig(input: unknown): WikiConfig {
       summaryClaimLimit: bounded("summaryClaimLimit", 1, 64),
       maxClaimsPerTopicPrompt: bounded("maxClaimsPerTopicPrompt", 1, 128),
       maxRelationshipCandidates: bounded("maxRelationshipCandidates", 1, 4_096),
+      relationshipCandidatesPerClaim: bounded(
+        "relationshipCandidatesPerClaim",
+        1,
+        64,
+      ),
+      relationshipOppositionCandidatesPerClaim: bounded(
+        "relationshipOppositionCandidatesPerClaim",
+        0,
+        32,
+      ),
       relationshipBatchSize: bounded("relationshipBatchSize", 1, 128),
       queryCandidateLimit: bounded("queryCandidateLimit", 1, 64),
+      analysisConcurrency: bounded("analysisConcurrency", 1, 16),
+      screeningConcurrency: bounded("screeningConcurrency", 1, 16),
+      topicConcurrency: bounded("topicConcurrency", 1, 16),
+      relationshipConcurrency: bounded("relationshipConcurrency", 1, 16),
+      adjudicationConcurrency: bounded("adjudicationConcurrency", 1, 16),
+      globalSynthesisSourceInterval: bounded(
+        "globalSynthesisSourceInterval",
+        1,
+        1_000,
+      ),
       thinking: (() => {
         const input = llm.thinking ?? DEFAULT_CONFIG.llm.thinking;
         if (!input || typeof input !== "object" || Array.isArray(input)) {

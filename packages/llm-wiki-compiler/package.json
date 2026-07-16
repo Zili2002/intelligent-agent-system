@@ -1,6 +1,6 @@
 {
   "name": "@intelligent-agent-system/llm-wiki-compiler",
-  "version": "1.3.0",
+  "version": "1.4.1",
   "description": "LLM evidence-first compiler for local research wikis",
   "type": "module",
   "bin": {

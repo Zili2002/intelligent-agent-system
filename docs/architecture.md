@@ -156,6 +156,18 @@ The default reasoning configuration uses Claude Opus 4.8 adaptive thinking at
 high effort; sampling temperature is omitted because Opus 4.8 does not expose
 adjustable sampling controls.
 
+Compilation uses bounded parallel stages. Independent source chunks, topics,
+relationship batches, and contradiction batches run concurrently, but each LLM
+request first obtains an atomic conservative Token reservation. The Claim graph
+is incremental: prior valid edges are retained, and a compile analyzes only
+pairs touching newly added Claims or explicit corroboration targets. State,
+Frontier, lifecycle, and Git writes remain serialized.
+
+Exact arXiv identifiers use a strict one-work retrieval path and never fan out
+into loosely related provider candidates. Global synthesis milestones are based
+on full-text evidence count rather than raw artifact count, preventing
+metadata-only branches from amplifying global compilation.
+
 Raw binaries are optional. The manifest separates portable reconstruction
 metadata from Git-hosted Markdown/JSON. A restore operation downloads or copies
 the original bytes, validates their hash, and writes only inside `raw/`.

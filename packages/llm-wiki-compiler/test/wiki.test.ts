@@ -21,6 +21,7 @@ import {
   ingest,
   ingestContent,
   initWiki,
+  isRetryableLlmTransportError,
   learnWiki,
   lintWiki,
   loadConfig,
@@ -159,17 +160,16 @@ const fakeLlm: LlmProvider = {
       };
     }
     if (request.purpose === "contradiction-adjudication") {
-      const entries = JSON.parse(
+      const input = JSON.parse(
         request.prompt.slice(request.prompt.lastIndexOf("\n") + 1),
-      ) as Array<{ from: string; to: string; claims: Array<{ id: string }> }>;
-      const batchClaimIds = [
-        ...new Set(
-          entries.flatMap((entry) => entry.claims.map((claim) => claim.id)),
-        ),
-      ];
+      ) as {
+        claims: Array<{ id: string }>;
+        contradictions: Array<{ from: string; to: string }>;
+      };
+      const batchClaimIds = input.claims.map((claim) => claim.id);
       return {
         text: JSON.stringify({
-          adjudications: entries.map((entry) => ({
+          adjudications: input.contradictions.map((entry) => ({
             from: entry.from,
             to: entry.to,
             resolution: "context-dependent",
@@ -412,6 +412,45 @@ test("chunking is stable, section-aware, and covers normalized content", () => {
     ),
   );
   assert.ok(chunks.some((chunk) => chunk.section === "Second"));
+});
+
+test("adaptive chunking reduces calls only for long newly planned sources", () => {
+  const content = Array.from(
+    { length: 1_200 },
+    (_, index) => `Paragraph ${index} contains exact structured evidence.`,
+  ).join("\n\n");
+  const source: SourceArtifact = {
+    id: "b".repeat(64),
+    hash: "b".repeat(64),
+    title: "Adaptive chunk source",
+    mediaType: "text/plain",
+    content,
+    provenance: { kind: "file", input: "adaptive.txt" },
+    provenanceHistory: [{ kind: "file", input: "adaptive.txt" }],
+    ingestedAt: "2020-01-01T00:00:00.000Z",
+    version: 1,
+  };
+  const legacy = chunkSource(source, {
+    chunkInputChars: 12_000,
+    chunkOverlapChars: 400,
+    maxChunksPerSource: 64,
+  });
+  const adaptive = chunkSource(source, {
+    chunkInputChars: 12_000,
+    chunkOverlapChars: 400,
+    maxChunksPerSource: 64,
+    adaptiveChunkThresholdChars: 60_000,
+    adaptiveChunkInputChars: 18_000,
+  });
+  assert.ok(content.length >= 60_000);
+  assert.ok(adaptive.length < legacy.length);
+  assert.equal(adaptive[0]?.start, 0);
+  assert.equal(adaptive.at(-1)?.end, content.length);
+  assert.ok(
+    adaptive.every(
+      (chunk) => content.slice(chunk.start, chunk.end) === chunk.content,
+    ),
+  );
 });
 
 test("long sources compile by chunks and preflight chunk overflow before spend", async () => {
@@ -1393,6 +1432,12 @@ test("contradiction adjudication persists constrained resolutions and pages", as
     }),
   );
   let adjudicationCalls = 0;
+  let firstAdjudicationInput:
+    | {
+        claims: Array<{ id: string }>;
+        contradictions: Array<Record<string, unknown>>;
+      }
+    | undefined;
   const partialAdjudicator: LlmProvider = {
     name: "partial-adjudicator",
     async complete(request) {
@@ -1400,15 +1445,20 @@ test("contradiction adjudication persists constrained resolutions and pages", as
         return fakeLlm.complete(request);
       }
       adjudicationCalls++;
-      const entries = JSON.parse(
+      const input = JSON.parse(
         request.prompt.slice(request.prompt.lastIndexOf("\n") + 1),
-      ) as Array<{ from: string; to: string; claims: Array<{ id: string }> }>;
-      const returned = adjudicationCalls === 1 ? entries.slice(0, 1) : entries;
-      const batchClaimIds = [
-        ...new Set(
-          entries.flatMap((entry) => entry.claims.map((claim) => claim.id)),
-        ),
-      ];
+      ) as {
+        claims: Array<{ id: string }>;
+        contradictions: Array<
+          { from: string; to: string } & Record<string, unknown>
+        >;
+      };
+      firstAdjudicationInput ??= input;
+      const returned =
+        adjudicationCalls === 1
+          ? input.contradictions.slice(0, 1)
+          : input.contradictions;
+      const batchClaimIds = input.claims.map((claim) => claim.id);
       return {
         text: JSON.stringify({
           adjudications: returned.map((entry) => ({
@@ -1431,6 +1481,12 @@ test("contradiction adjudication persists constrained resolutions and pages", as
   assert.equal(result.adjudications[0]?.resolution, "context-dependent");
   assert.equal(result.adjudications.length, 2);
   assert.equal(adjudicationCalls, 2);
+  assert.equal(firstAdjudicationInput?.claims.length, 3);
+  assert.ok(
+    firstAdjudicationInput?.contradictions.every(
+      (entry) => !("claims" in entry),
+    ),
+  );
   const pages = await readdir(path.join(root, "wiki", "contradictions"));
   const page = await readFile(
     path.join(root, "wiki", "contradictions", pages[0]!),
@@ -1797,6 +1853,192 @@ test("claim registry topics and relationship batches are complete and cached", a
   );
 });
 
+test("compile bounds concurrent source, topic, and relationship LLM calls", async () => {
+  const root = await workspace("bounded-compile-concurrency");
+  await initWiki(root);
+  const configPath = path.join(root, ".llmwiki-config.json");
+  const config = JSON.parse(await readFile(configPath, "utf8"));
+  config.llm.analysisConcurrency = 3;
+  config.llm.topicConcurrency = 3;
+  config.llm.relationshipConcurrency = 3;
+  config.llm.relationshipBatchSize = 1;
+  await writeFile(configPath, JSON.stringify(config));
+  await ingestContent("Planning agent evidence is exact.", "planning.txt", {
+    root,
+  });
+  await ingestContent("Tool agent evidence is exact.", "tool.txt", { root });
+  await ingestContent("Recovery agent evidence is exact.", "recovery.txt", {
+    root,
+  });
+  const active = new Map<string, number>();
+  const maximum = new Map<string, number>();
+  const provider: LlmProvider = {
+    name: "bounded-concurrency",
+    async complete(request) {
+      const count = (active.get(request.purpose) ?? 0) + 1;
+      active.set(request.purpose, count);
+      maximum.set(
+        request.purpose,
+        Math.max(maximum.get(request.purpose) ?? 0, count),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      try {
+        return await fakeLlm.complete(request);
+      } finally {
+        active.set(request.purpose, (active.get(request.purpose) ?? 1) - 1);
+      }
+    },
+  };
+  await compileWiki({ root, llmProvider: provider, maxLlmTokens: 100_000 });
+  assert.ok((maximum.get("source-analysis") ?? 0) > 1);
+  assert.ok((maximum.get("topic-synthesis") ?? 0) > 1);
+  assert.ok((maximum.get("relationship-analysis") ?? 0) > 1);
+  assert.ok((maximum.get("source-analysis") ?? 0) <= 3);
+  assert.ok((maximum.get("topic-synthesis") ?? 0) <= 3);
+  assert.ok((maximum.get("relationship-analysis") ?? 0) <= 3);
+});
+
+test("incremental relationship analysis only evaluates pairs involving new Claims", async () => {
+  const root = await workspace("incremental-relationships");
+  await initWiki(root);
+  const configPath = path.join(root, ".llmwiki-config.json");
+  const config = JSON.parse(await readFile(configPath, "utf8"));
+  config.llm.relationshipBatchSize = 1;
+  await writeFile(configPath, JSON.stringify(config));
+  await ingestContent("Planning agent evidence is exact.", "first.txt", {
+    root,
+  });
+  await ingestContent("Recovery agent evidence is exact.", "second.txt", {
+    root,
+  });
+  await compileWiki({ root, llmProvider: fakeLlm });
+  await ingestContent("Third agent evidence is exact.", "third.txt", { root });
+  const analyzedPairs: Array<{
+    fromClaim: { statement: string };
+    toClaim: { statement: string };
+  }> = [];
+  const provider: LlmProvider = {
+    name: "incremental-relationships",
+    async complete(request) {
+      if (request.purpose === "relationship-analysis") {
+        analyzedPairs.push(
+          ...(JSON.parse(
+            request.prompt.slice(request.prompt.lastIndexOf("\n") + 1),
+          ) as typeof analyzedPairs),
+        );
+      }
+      return fakeLlm.complete(request);
+    },
+  };
+  await compileWiki({ root, llmProvider: provider });
+  assert.ok(analyzedPairs.length > 0);
+  assert.ok(analyzedPairs.length <= 12);
+  assert.ok(
+    analyzedPairs.every((pair) =>
+      `${pair.fromClaim.statement} ${pair.toClaim.statement}`.includes(
+        "Third agent evidence",
+      ),
+    ),
+  );
+  const graph = JSON.parse(
+    await readFile(path.join(root, "meta", "claim_graph.json"), "utf8"),
+  );
+  assert.equal(graph.nodes.length, 3);
+});
+
+test("deferred global synthesis runs only at the configured source milestone", async () => {
+  const root = await workspace("global-synthesis-milestone");
+  await initWiki(root);
+  const configPath = path.join(root, ".llmwiki-config.json");
+  const config = JSON.parse(await readFile(configPath, "utf8"));
+  config.llm.globalSynthesisSourceInterval = 2;
+  await writeFile(configPath, JSON.stringify(config));
+  await ingestContent("First milestone evidence.", "first.txt", { root });
+  await ingestContent("Second milestone evidence.", "second.txt", { root });
+  await compileWiki({ root, llmProvider: fakeLlm });
+
+  await ingestContent("Third milestone evidence.", "third.txt", { root });
+  const deferredCalls: string[] = [];
+  const deferredProvider: LlmProvider = {
+    name: "deferred-global",
+    async complete(request) {
+      deferredCalls.push(request.purpose);
+      return fakeLlm.complete(request);
+    },
+  };
+  const deferred = await compileWiki({
+    root,
+    llmProvider: deferredProvider,
+    deferGlobalSynthesis: true,
+  });
+  assert.equal(deferred.globalSynthesis, false);
+  assert.equal(deferred.registryCount, 3);
+  assert.ok(deferredCalls.includes("source-analysis"));
+  assert.ok(!deferredCalls.includes("topic-synthesis"));
+  assert.ok(!deferredCalls.includes("relationship-analysis"));
+  assert.ok(!deferredCalls.includes("synthesis"));
+
+  await ingestContent("Fourth milestone evidence.", "fourth.txt", { root });
+  const milestoneCalls: string[] = [];
+  const milestoneProvider: LlmProvider = {
+    name: "milestone-global",
+    async complete(request) {
+      milestoneCalls.push(request.purpose);
+      return fakeLlm.complete(request);
+    },
+  };
+  const milestone = await compileWiki({
+    root,
+    llmProvider: milestoneProvider,
+    deferGlobalSynthesis: true,
+  });
+  assert.equal(milestone.globalSynthesis, true);
+  assert.equal(milestone.registryCount, 4);
+  assert.ok(milestoneCalls.includes("source-analysis"));
+  assert.ok(milestoneCalls.includes("topic-synthesis"));
+  assert.ok(milestoneCalls.includes("relationship-analysis"));
+  assert.ok(milestoneCalls.includes("synthesis"));
+});
+
+test("metadata-only sources do not advance the global synthesis milestone", async () => {
+  const root = await workspace("evidence-source-milestone");
+  await initWiki(root);
+  const configPath = path.join(root, ".llmwiki-config.json");
+  const config = JSON.parse(await readFile(configPath, "utf8"));
+  config.llm.globalSynthesisSourceInterval = 2;
+  await writeFile(configPath, JSON.stringify(config));
+  await ingestContent("Initial full-text evidence.", "initial.txt", { root });
+  await compileWiki({ root, llmProvider: fakeLlm });
+  await ingestContent("Metadata branch one.", "metadata-one", {
+    root,
+    mediaType: "application/vnd.llmwiki.search-result+text",
+  });
+  await ingestContent("Metadata branch two.", "metadata-two", {
+    root,
+    mediaType: "application/vnd.llmwiki.search-result+text",
+  });
+  const metadataCompile = await compileWiki({
+    root,
+    llmProvider: fakeLlm,
+    deferGlobalSynthesis: true,
+  });
+  assert.equal(metadataCompile.globalSynthesis, false);
+  await ingestContent("Second full-text evidence.", "second.txt", { root });
+  const oneFull = await compileWiki({
+    root,
+    llmProvider: fakeLlm,
+    deferGlobalSynthesis: true,
+  });
+  assert.equal(oneFull.globalSynthesis, false);
+  await ingestContent("Third full-text evidence.", "third.txt", { root });
+  const milestone = await compileWiki({
+    root,
+    llmProvider: fakeLlm,
+    deferGlobalSynthesis: true,
+  });
+  assert.equal(milestone.globalSynthesis, true);
+});
+
 test("screening includes focus and existing source index", async () => {
   const root = await workspace("screening-context");
   await initWiki(root);
@@ -1895,6 +2137,82 @@ test("LLM JSON errors preserve structured usage", async () => {
   );
 });
 
+test("LLM requests retry bounded transient transport failures", async () => {
+  let calls = 0;
+  const provider: LlmProvider = {
+    name: "transient-transport",
+    async complete() {
+      calls++;
+      if (calls < 3) {
+        throw Object.assign(new Error("temporary proxy failure"), {
+          status: 499,
+        });
+      }
+      return {
+        text: JSON.stringify({ ok: true }),
+        usage: { inputTokens: 2, outputTokens: 1 },
+      };
+    },
+  };
+  const result = await requestJson(
+    provider,
+    { purpose: "query", prompt: "x", maxTokens: 128 },
+    (value) => value as { ok: boolean },
+    new LlmUsageTracker(1_000),
+  );
+  assert.equal(result.ok, true);
+  assert.equal(calls, 3);
+  assert.equal(isRetryableLlmTransportError({ status: 429 }), true);
+  assert.equal(isRetryableLlmTransportError({ status: 400 }), false);
+});
+
+test("LLM JSON parsing safely escapes raw controls inside strings", async () => {
+  const provider: LlmProvider = {
+    name: "raw-controls",
+    async complete() {
+      return {
+        text: '{"quote":"predicted\tcost\\nremains exact","ok":true}',
+      };
+    },
+  };
+  const parsed = await requestJson(
+    provider,
+    { purpose: "source-analysis", prompt: "x", maxTokens: 128 },
+    (value) => value as { quote: string; ok: boolean },
+  );
+  assert.equal(parsed.quote, "predicted\tcost\nremains exact");
+  assert.equal(parsed.ok, true);
+});
+
+test("LLM JSON parsing closes only complete unterminated containers", async () => {
+  const provider: LlmProvider = {
+    name: "open-container",
+    async complete() {
+      return {
+        text: '{"edges":[{"from":"a","to":"b","type":"supports"}]',
+      };
+    },
+  };
+  const parsed = await requestJson(
+    provider,
+    { purpose: "relationship-analysis", prompt: "x", maxTokens: 128 },
+    (value) => value as { edges: unknown[] },
+  );
+  assert.equal(parsed.edges.length, 1);
+  await assert.rejects(() =>
+    requestJson(
+      {
+        name: "open-string",
+        async complete() {
+          return { text: '{"answer":"unterminated}' };
+        },
+      },
+      { purpose: "query", prompt: "x", maxTokens: 128 },
+      (value) => value,
+    ),
+  );
+});
+
 test("LLM token budgets block calls before spend", async () => {
   let calls = 0;
   const provider: LlmProvider = {
@@ -1946,6 +2264,45 @@ test("LLM token budgets reduce output allowance to fit the operation", async () 
   );
   assert.ok(requestedMaxTokens >= 128);
   assert.ok(requestedMaxTokens < 400);
+});
+
+test("LLM token reservations prevent concurrent budget overspend", async () => {
+  let active = 0;
+  let maximumActive = 0;
+  let calls = 0;
+  const provider: LlmProvider = {
+    name: "concurrent-budget",
+    async complete() {
+      calls++;
+      active++;
+      maximumActive = Math.max(maximumActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      active--;
+      return {
+        text: JSON.stringify({ ok: true }),
+        usage: { inputTokens: 10, outputTokens: 10 },
+      };
+    },
+  };
+  const tracker = new LlmUsageTracker(700);
+  const requests = Array.from({ length: 2 }, () =>
+    requestJson(
+      provider,
+      {
+        purpose: "query" as const,
+        prompt: "Short concurrent prompt",
+        maxTokens: 128,
+      },
+      () => true,
+      tracker,
+    ),
+  );
+  const settled = await Promise.allSettled(requests);
+  assert.equal(settled.filter((item) => item.status === "fulfilled").length, 1);
+  assert.equal(settled.filter((item) => item.status === "rejected").length, 1);
+  assert.equal(calls, 1);
+  assert.equal(maximumActive, 1);
+  assert.deepEqual(tracker.result(), { inputTokens: 10, outputTokens: 10 });
 });
 
 test("compile drops ungrounded claims and normalizes asymmetric synthesis mappings", async () => {
@@ -2107,6 +2464,52 @@ test("compile recovers only complete gaps from truncated synthesis JSON", async 
   assert.equal(gaps.gaps[0]?.description, "Complete gap");
 });
 
+test("compile deterministically bounds oversized synthesis Claim selections", async () => {
+  const root = await workspace("oversized-synthesis-selection");
+  await initWiki(root);
+  const configPath = path.join(root, ".llmwiki-config.json");
+  const config = JSON.parse(await readFile(configPath, "utf8"));
+  config.llm.summaryClaimLimit = 1;
+  await writeFile(configPath, JSON.stringify(config));
+  await ingestContent("First bounded evidence.", "first.txt", { root });
+  await ingestContent("Second bounded evidence.", "second.txt", { root });
+  const provider: LlmProvider = {
+    name: "oversized-synthesis",
+    async complete(request) {
+      if (request.purpose === "synthesis") {
+        const entries = JSON.parse(
+          request.prompt.slice(request.prompt.lastIndexOf("\n") + 1),
+        ) as Array<{ claims: Array<{ id: string }> }>;
+        const ids = entries.flatMap((entry) =>
+          entry.claims.map((claim) => claim.id),
+        );
+        return {
+          text: JSON.stringify({
+            concepts: [
+              {
+                id: "bounded",
+                title: "Bounded",
+                definition: "Summary selection remains bounded.",
+                claimIds: ids,
+              },
+            ],
+            claims: ids.map((id) => ({
+              id,
+              conceptIds: ["bounded"],
+            })),
+            contradictions: [],
+            gaps: [],
+          }),
+        };
+      }
+      return fakeLlm.complete(request);
+    },
+  };
+  const result = await compileWiki({ root, llmProvider: provider });
+  assert.equal(result.registryCount, 2);
+  assert.equal(result.summaryClaimCount, 1);
+});
+
 test("compile recovers complete topic fields and Claim IDs from truncation", async () => {
   const root = await workspace("truncated-topic-recovery");
   await initWiki(root);
@@ -2167,7 +2570,10 @@ test("relationship analysis drops unknown pairs without losing valid edges", asy
               {
                 ...pairs[0],
                 type: "supports",
-                explanation: "The supplied pair reports matching evidence.",
+                explanation: Array.from(
+                  { length: 45 },
+                  (_, index) => `word${index}`,
+                ).join(" "),
               },
               {
                 from: "claim-" + "f".repeat(32),
@@ -2186,6 +2592,7 @@ test("relationship analysis drops unknown pairs without losing valid edges", asy
   const graph = JSON.parse(await readFile(result.claimGraphPath!, "utf8"));
   assert.equal(graph.edges.length, 1);
   assert.equal(graph.edges[0].type, "supports");
+  assert.equal(graph.edges[0].explanation.split(/\s+/).length, 30);
 });
 
 test("compile accepts an explicitly excluded source without a summary", async () => {
@@ -2338,6 +2745,56 @@ test("single-source compilation projects validated analysis without synthesis", 
   assert.match(await readFile(gapsPath, "utf8"), /Preserved reflection gap/);
 });
 
+test("single-source projection preserves Registry Claims while bounding the summary", async () => {
+  const root = await workspace("single-source-summary-limit");
+  await initWiki(root);
+  const configPath = path.join(root, ".llmwiki-config.json");
+  const config = JSON.parse(await readFile(configPath, "utf8"));
+  config.llm.summaryClaimLimit = 2;
+  await writeFile(configPath, JSON.stringify(config));
+  const statements = [
+    "First exact source claim.",
+    "Second exact source claim.",
+    "Third exact source claim.",
+    "Fourth exact source claim.",
+  ];
+  await ingestContent(statements.join(" "), "single-many.txt", { root });
+  const provider: LlmProvider = {
+    name: "single-many",
+    async complete(request) {
+      if (request.purpose === "source-analysis") {
+        return {
+          text: JSON.stringify({
+            relevant: true,
+            summary: "Multiple exact claims.",
+            concepts: [
+              {
+                id: "multiple",
+                title: "Multiple claims",
+                definition: "Several claims share one source.",
+                claimIds: statements.map((_, index) => `c${index + 1}`),
+              },
+            ],
+            claims: statements.map((statement, index) => ({
+              id: `c${index + 1}`,
+              text: statement,
+              quote: statement,
+            })),
+          }),
+        };
+      }
+      return fakeLlm.complete(request);
+    },
+  };
+  const result = await compileWiki({ root, llmProvider: provider });
+  assert.equal(result.registryCount, 4);
+  assert.equal(result.summaryClaimCount, 2);
+  const registry = JSON.parse(await readFile(result.claimsPath!, "utf8"));
+  assert.equal(registry.claims.length, 4);
+  const graph = JSON.parse(await readFile(result.graphPath, "utf8"));
+  assert.equal(graph.claims.length, 2);
+});
+
 test("compile removes only stale generated pages and renders full provenance", async () => {
   const root = await workspace("stale-generated");
   await initWiki(root);
@@ -2377,6 +2834,21 @@ generated: "true"
   assert.match(sourcePage, /https:\/\/example\.invalid\/portable/);
   assert.match(sourcePage, /test-provider/);
   assert.match(sourcePage, /https:\/\/storage\.invalid\/portable\.txt/);
+});
+
+test("source page slugs remain unique for long duplicate titles", async () => {
+  const root = await workspace("duplicate-long-source-title");
+  await initWiki(root);
+  const title =
+    "A Very Long World Model Source Title That Exceeds the Frontmatter Slug Truncation Boundary";
+  await ingestContent("First unique evidence.", "first.txt", { root, title });
+  await ingestContent("Second unique evidence.", "second.txt", { root, title });
+  await compileWiki({ root, llmProvider: fakeLlm });
+  const lint = await lintWiki({ root });
+  assert.equal(
+    lint.errors.some((error) => error.code === "duplicate-slug"),
+    false,
+  );
 });
 
 test("query and reflection reject invented compiled references", async () => {
@@ -3232,7 +3704,58 @@ test("search normalizes year bounds and limits merged provider output", async ()
     from: "2024-12-15",
     to: "2024-12-31",
   });
+
   assert.equal(requestedLimit, 2);
   assert.equal(result.results.length, 1);
   assert.equal(result.results[0]?.id, "year");
+});
+
+test("exact arXiv queries reject unrelated results and import at most one work", async () => {
+  const root = await workspace("exact-arxiv-query");
+  await initWiki(root);
+  const provider: SearchProvider = {
+    name: "mixed-arxiv",
+    async search() {
+      return [
+        {
+          id: "2407.20179v2",
+          title: "Exact paper",
+          url: "https://arxiv.org/abs/2407.20179v2",
+          abstract: "Exact evidence.",
+          provider: "arxiv",
+          arxivId: "2407.20179",
+          versionId: "2407.20179v2",
+        },
+        {
+          id: "9999.99999v1",
+          title: "Unrelated paper",
+          url: "https://arxiv.org/abs/9999.99999v1",
+          abstract: "Unrelated evidence.",
+          provider: "arxiv",
+          arxivId: "9999.99999",
+          versionId: "9999.99999v1",
+        },
+        {
+          id: "2407.20179v1",
+          title: "Older exact paper",
+          url: "https://arxiv.org/abs/2407.20179v1",
+          abstract: "Older exact evidence.",
+          provider: "arxiv",
+          arxivId: "2407.20179",
+          versionId: "2407.20179v1",
+        },
+      ];
+    },
+  };
+  const result = await searchWiki("2407.20179", {
+    root,
+    provider,
+    limit: 5,
+    importResults: true,
+    llmProvider: fakeLlm,
+  });
+  assert.equal(result.results.length, 1);
+  assert.equal(result.results[0]?.versionId, "2407.20179v2");
+  assert.equal(result.imported.length, 1);
+  assert.equal(result.imported[0]?.artifact.title, "Exact paper");
 });
