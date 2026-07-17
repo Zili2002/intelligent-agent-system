@@ -40,11 +40,28 @@ llm-wiki-compiler
   ├─ LLM reflection with referenced claims and sources
   └─ multi-provider LLM-screened bounded learning
 
+research-reader
+  ├─ versioned Paper Passport / Review / Reading Session state
+  ├─ subscriptions, provider tracking, triage, queues, reports, and recovery
+  ├─ OA acquisition and evidence-grounded Fast / Standard / Deep review
+  ├─ exact-quote Q&A, comparison, notes, annotations, and Wiki extraction
+  ├─ feedback, bounded profile learning, calibration, retention, and analytics
+  ├─ Paper–Claim–Topic navigation and evidence-grounded survey planning
+  └─ folder / Obsidian / Zotero / LaTeX / PubMed / conference adapters
+
+research-reader-web
+  ├─ localhost-only Node API and static React client
+  ├─ PDF.js with lazy-loaded PDF runtime
+  ├─ Review, text/PDF, question, and annotation panels
+  ├─ handwriting, optional browser voice transcription, and local notification
+  └─ CSRF, content-security policy, and path confinement
+
 shared
   ├─ AgentState types
   ├─ atomic locked checkpoints
   ├─ explicit ff-only onboarding
-  └─ explicit commit/push handoff
+  ├─ explicit commit/push handoff
+  └─ generic atomic JSON, locks, retries, redacted JSONL, and sanitization
 ```
 
 ## Autonomous cycle
@@ -68,6 +85,28 @@ Mission state + AgentState checkpoint
   ↓
 Experiment evidence → Wiki compile → Wiki reflection
 ```
+
+## Research reading cycle
+
+```text
+Subscription / adapter
+  ↓
+Provider search → canonical identity → deterministic triage
+  ↓ optional approved LLM triage
+Paper Passport → reading queue → approved OA acquisition
+  ↓
+Fast / Standard / Deep Review with exact evidence anchors
+  ↓
+Quick Scan / Guided Read / Deep Dive / Compare / Extract
+  ↓
+Feedback → bounded Profile update → calibration and reports
+  ↓
+Paper–Claim–Topic navigation, retention, and survey planning
+```
+
+Scientific quality, evidence confidence, personal relevance, reading priority,
+and user value remain separate persisted values. Missing source coverage is
+represented as `unknown`, never inferred into a quality score.
 
 The offline designer runs a reproducible local probe and returns inconclusive
 for domain-specific claims. Anthropic mode is responsible for reviewed,

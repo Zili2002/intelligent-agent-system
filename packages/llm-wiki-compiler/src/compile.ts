@@ -239,7 +239,7 @@ function unique(values: string[], label: string): void {
     throw new Error(`${label} contains duplicate IDs`);
 }
 
-function resolveExactQuote(
+export function resolveExactQuote(
   content: string,
   requested: string,
 ): { quote: string; offset: number } | undefined {

@@ -1,6 +1,6 @@
 {
   "name": "autonomous-agent",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Mission-driven autonomous exploration system",
   "type": "module",
   "main": "./dist/cli.js",
@@ -29,8 +29,8 @@
   "license": "MIT",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.110.0",
-    "@intelligent-agent/shared": "0.2.0",
-    "@intelligent-agent-system/llm-wiki-compiler": "1.4.1",
+    "@intelligent-agent/shared": "0.3.0",
+    "@intelligent-agent-system/llm-wiki-compiler": "1.5.0",
     "commander": "^15.0.0",
     "dockerode": "^5.0.1",
     "dotenv": "^17.4.2"

@@ -1,6 +1,6 @@
 {
   "name": "intelligent-agent-system",
-  "version": "0.15.1",
+  "version": "0.16.0",
   "description": "Self-evolving autonomous agent system with mission-driven exploration and knowledge compilation",
   "private": true,
   "engines": {
@@ -11,13 +11,13 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspace @intelligent-agent/shared && npm run build --workspace @intelligent-agent-system/llm-wiki-compiler && npm run build --workspace autonomous-agent",
-    "typecheck": "npm run typecheck --workspace @intelligent-agent/shared && npm run typecheck --workspace @intelligent-agent-system/llm-wiki-compiler && npm run typecheck --workspace autonomous-agent",
-    "test": "npm test --workspace @intelligent-agent/shared && npm test --workspace @intelligent-agent-system/llm-wiki-compiler && npm test --workspace autonomous-agent",
-    "lint": "npm run lint --workspace @intelligent-agent/shared && npm run lint --workspace @intelligent-agent-system/llm-wiki-compiler && npm run lint --workspace autonomous-agent && npm run format:check",
-    "format": "prettier --write \"packages/**/*.ts\"",
-    "format:check": "prettier --check \"packages/**/*.ts\"",
-    "clean": "npm run clean --workspace autonomous-agent && npm run clean --workspace @intelligent-agent-system/llm-wiki-compiler && npm run clean --workspace @intelligent-agent/shared"
+    "build": "npm run build --workspace @intelligent-agent/shared && npm run build --workspace @intelligent-agent-system/llm-wiki-compiler && npm run build --workspace @intelligent-agent-system/research-reader && npm run build --workspace @intelligent-agent-system/research-reader-web && npm run build --workspace autonomous-agent",
+    "typecheck": "npm run typecheck --workspace @intelligent-agent/shared && npm run typecheck --workspace @intelligent-agent-system/llm-wiki-compiler && npm run typecheck --workspace @intelligent-agent-system/research-reader && npm run typecheck --workspace @intelligent-agent-system/research-reader-web && npm run typecheck --workspace autonomous-agent",
+    "test": "npm test --workspace @intelligent-agent/shared && npm test --workspace @intelligent-agent-system/llm-wiki-compiler && npm test --workspace @intelligent-agent-system/research-reader && npm test --workspace @intelligent-agent-system/research-reader-web && npm test --workspace autonomous-agent",
+    "lint": "npm run lint --workspace @intelligent-agent/shared && npm run lint --workspace @intelligent-agent-system/llm-wiki-compiler && npm run lint --workspace @intelligent-agent-system/research-reader && npm run lint --workspace @intelligent-agent-system/research-reader-web && npm run lint --workspace autonomous-agent && npm run format:check",
+    "format": "prettier --write \"packages/**/*.{ts,tsx}\"",
+    "format:check": "prettier --check \"packages/**/*.{ts,tsx}\"",
+    "clean": "npm run clean --workspace autonomous-agent && npm run clean --workspace @intelligent-agent-system/research-reader-web && npm run clean --workspace @intelligent-agent-system/research-reader && npm run clean --workspace @intelligent-agent-system/llm-wiki-compiler && npm run clean --workspace @intelligent-agent/shared"
   },
   "keywords": [
     "ai",

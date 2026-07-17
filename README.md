@@ -19,8 +19,18 @@ knowledge in a separate Markdown wiki.
   evidence-grounded contradiction adjudication, local semantic retrieval,
   bounded evidence-frontier scheduling, incremental source/version/retraction
   refresh, fixed retrieval evaluation, reflection, and active learning.
+- `packages/research-reader` — Paper Passports, subscriptions, bounded
+  tracking and triage, OA acquisition, evidence-grounded review, progressive
+  reading sessions, notes, scoped Q&A, comparison, Wiki extraction,
+  personalization, calibration, reports, scheduling, navigation, retention,
+  survey planning, and literature adapters.
+- `packages/research-reader-web` — localhost-only React/PDF.js reader with
+  Review cards, text/PDF display, exact-quote annotations, handwriting,
+  optional browser voice transcription, scoped Q&A, CSRF protection, and
+  strict path confinement.
 - `packages/shared` — atomic `.agent-state.json` checkpoints and explicit,
-  branch-aware Git handoff utilities.
+  branch-aware Git handoff utilities plus generic atomic JSON, file locks,
+  bounded retries, redacted JSONL, and secret sanitization.
 
 The companion knowledge repository is
 [`Zili2002/my-research-wiki`](https://github.com/Zili2002/my-research-wiki).
@@ -114,6 +124,45 @@ llmwiki status
 
 The compiler preserves source provenance and returns no-evidence rather than
 inventing an answer when nothing relevant is indexed.
+
+## Research Reader workflow
+
+```bash
+# Initialize against a research Wiki root
+research-reader --root <wiki> init
+
+# Add and run a bounded subscription
+research-reader --root <wiki> subscription-add \
+  "World representation" "embodied robotics world representation" \
+  --providers arxiv,openalex,crossref
+research-reader --root <wiki> track --approve-network
+
+# Acquire/review/read one selected paper
+research-reader --root <wiki> paper-acquire <paper-id> --approve-network
+research-reader --root <wiki> paper-review <paper-id> \
+  --level standard --approve-llm
+research-reader --root <wiki> read-start <paper-id> --mode guided-read
+
+# Reports, calibration, navigation, and adapters
+research-reader --root <wiki> report-weekly
+research-reader --root <wiki> calibration-run
+research-reader --root <wiki> navigation
+research-reader --root <wiki> adapter-run zotero <export.json>
+```
+
+All external network, full-text, paid LLM, compilation, and external-send
+effects remain separately approved and bounded. Fast reviews never score
+dimensions that require unavailable full text.
+
+Build and start the optional local Web reader:
+
+```bash
+npm run build --workspace @intelligent-agent-system/research-reader-web
+research-reader-web --root <wiki> --port 4173
+```
+
+The Web server rejects non-local bind addresses and requires a per-process CSRF
+token for mutations.
 
 `raw/manifest.json` records reconstructable source locations and original
 hashes. On a new device, use `llmwiki manifest` and `llmwiki restore-raw`

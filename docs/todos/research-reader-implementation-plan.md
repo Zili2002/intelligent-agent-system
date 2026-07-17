@@ -19,6 +19,19 @@
 
 本文档是实施规格，不直接复制 Academic Research Skills 项目的提示词或实现。该项目当前采用 CC BY-NC 4.0 许可；本仓库继续采用 clean-room 方式，只吸收一般设计思想，并保留来源说明。
 
+## 实施状态
+
+截至 2026-07-16，Phase 0-8 的本地可验证范围已经实现：
+
+- Shared Runtime、Reader Core、Tracking、Triage、OA 获取和报告。
+- Fast/Standard/Deep Reviewer、精确证据、对抗审查、引用与时间完整性。
+- Reading Session、笔记、问答、对比、Extract、反馈、Profile 和校准。
+- Cron/Daemon、审批、恢复、健康、图谱、分析、留存和综述计划。
+- localhost React/PDF.js Web、手写、可选语音转写和本地通知。
+- Folder、Obsidian、Zotero、LaTeX、PubMed 和 Conference 适配器。
+
+Google Scholar、实时社区平台以及邮件/Slack 实际发送仍受官方 API、用户凭据、目标账号和外部发送审批约束；系统只提供安全扩展契约，不伪造可用集成。
+
 ## 2. 最终目标
 
 在现有证据级 Wiki 和自主研究 Agent 基础上，增加一个个人研究阅读系统：

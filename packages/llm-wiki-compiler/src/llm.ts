@@ -251,7 +251,7 @@ export function requireLlm(
     );
   }
   if (options.llmProvider) return options.llmProvider;
-  if (!options.approveLlm) {
+  if (options.approveLlm !== true) {
     throw new Error(
       "LLM knowledge operations require explicit approval. Pass approveLlm: true or use --approve-llm.",
     );

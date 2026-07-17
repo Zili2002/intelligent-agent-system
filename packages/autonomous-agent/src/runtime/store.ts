@@ -1,13 +1,11 @@
 import { randomUUID } from "node:crypto";
-import {
-  appendFile,
-  mkdir,
-  readFile,
-  readdir,
-  rename,
-  writeFile,
-} from "node:fs/promises";
+import { mkdir, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
+import {
+  appendJsonLine,
+  atomicWriteJson,
+  redactSecrets,
+} from "@intelligent-agent/shared";
 import type { Mission } from "../types/mission.js";
 import type {
   RunBudgetSnapshot,
@@ -65,9 +63,7 @@ export async function saveRunRecord(
   await mkdir(directory, { recursive: true });
   run.updatedAt = new Date().toISOString();
   const filePath = path.join(directory, `${run.id}.json`);
-  const temporary = `${filePath}.${process.pid}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(run, null, 2)}\n`, "utf8");
-  await rename(temporary, filePath);
+  await atomicWriteJson(filePath, run);
 }
 
 export async function finishRunRecord(
@@ -109,10 +105,13 @@ export async function appendRunEvent(
     message: redact(event.message),
     ...(event.details ? { details: sanitizeDetails(event.details) } : {}),
   };
-  const line = `${JSON.stringify(sanitized)}\n`;
   await Promise.all([
-    appendFile(path.join(directory, HISTORY_FILE), line, "utf8"),
-    appendFile(path.join(directory, LOG_FILE), line, "utf8"),
+    appendJsonLine(path.join(directory, HISTORY_FILE), sanitized, {
+      redact: false,
+    }),
+    appendJsonLine(path.join(directory, LOG_FILE), sanitized, {
+      redact: false,
+    }),
   ]);
 }
 
@@ -160,12 +159,7 @@ export async function readRunHistory(
 }
 
 function redact(value: string): string {
-  return value
-    .replace(/\b(?:sk|api)[-_][A-Za-z0-9_-]{12,}\b/g, "[REDACTED]")
-    .replace(
-      /(ANTHROPIC_(?:API_KEY|AUTH_TOKEN)\s*[=:]\s*)\S+/gi,
-      "$1[REDACTED]",
-    );
+  return redactSecrets(value);
 }
 
 function sanitizeDetails(

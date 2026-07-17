@@ -92,6 +92,52 @@ thinking and high effort. Proxy-specific aliases are supported through
 `ANTHROPIC_MODEL`; terminal-format suffixes are removed only in memory before
 the request.
 
+## Research Reader
+
+Initialize Reader state in a Wiki repository:
+
+```bash
+research-reader --root <wiki> init
+research-reader --root <wiki> status
+```
+
+Tracking requires explicit network approval. Paid triage and review require a
+separate LLM approval:
+
+```bash
+research-reader --root <wiki> track --approve-network
+research-reader --root <wiki> paper-review <paper-id> \
+  --level standard --approve-llm --max-llm-tokens 50000
+```
+
+For unattended operation, start the daemon with bounded duration and cycles.
+Without `--approve-network`, it persists a pending approval request and exits
+with `waiting-approval` rather than performing network work.
+
+```bash
+research-reader --root <wiki> daemon \
+  --approve-network \
+  --interval 86400 \
+  --max-duration 604800 \
+  --max-cycles 7
+```
+
+Reader state is stored under `meta/reader/`; reports are under
+`reports/reader/`. Large source binaries remain governed by the Wiki raw
+manifest and external-storage policy.
+
+Start the optional local Web reader after building:
+
+```bash
+npm run build --workspace @intelligent-agent-system/research-reader-web
+research-reader-web --root <wiki> --port 4173
+```
+
+The Web server binds only to localhost, validates the Host header, requires a
+per-process CSRF token for mutations, and confines static/raw file access.
+LLM-backed Q&A remains disabled unless `--approve-llm` is supplied for that
+server process.
+
 ## Docker image
 
 ```bash
@@ -148,6 +194,9 @@ autonomous-agent --root <workspace> history
 autonomous-agent --root <workspace> approvals
 llmwiki --root <wiki-repository> status
 llmwiki --root <wiki-repository> lint
+research-reader --root <wiki-repository> health
+research-reader --root <wiki-repository> runs
+research-reader --root <wiki-repository> approvals
 ```
 
 Review diffs before any commit or push.

@@ -332,6 +332,13 @@ export async function acquireFullText(
   result: SearchResult,
   options: FullTextOptions,
 ): Promise<FullTextAcquisition> {
+  if (
+    !Number.isFinite(options.maxFileBytes) ||
+    !Number.isInteger(options.maxFileBytes) ||
+    options.maxFileBytes < 1
+  ) {
+    throw new Error("maxFileBytes must be a positive finite integer");
+  }
   const location = selectLocation(result, options.oaOnly);
   if (!location) {
     throw new Error(
